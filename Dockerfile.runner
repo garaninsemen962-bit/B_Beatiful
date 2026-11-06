@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY engine.py /app/engine.py
+RUN mkdir -p /output /dataset && chmod 755 /app /output /dataset
+ENV PYTHONDONTWRITEBYTECODE=1
+USER 65534:65534
+CMD ["python", "-I", "-u", "/app/engine.py", "/output"]
