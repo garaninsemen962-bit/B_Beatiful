@@ -65,7 +65,10 @@ def process(folder, checks_only=False):
         status['logs'].append(dict(stage=stage,seconds=seconds,time=time.time(),script=script))
         dump(folder/'status.json',status)
     try:
-        db=sqlite3.connect(folder/'mart.sqlite')
+        checks_only = checks_only or config.get('mode') == 'checks'
+        db=sqlite3.connect(Path(config.get('source_mart',folder/'mart.sqlite')).as_uri()+'?mode=ro&immutable=1',uri=True) if checks_only else sqlite3.connect(folder/'mart.sqlite')
+        if checks_only:
+            db.execute('PRAGMA query_only=ON');log('Готовая витрина подключена: повторная нормализация не требуется',progress=90)
         if not checks_only:
             db.executescript('''PRAGMA journal_mode=WAL;
             CREATE TABLE normalized(APP_ID TEXT,SOURCE TEXT,PATH TEXT,ARRAY_KEY TEXT,data TEXT, PRIMARY KEY(APP_ID,SOURCE,PATH,ARRAY_KEY));
@@ -77,20 +80,25 @@ def process(folder, checks_only=False):
             data=Path(config['dataset'])/'RESULTS'; b=data/'BEFORE_MASTER'; a=data/'AFTER_BETA'
             names=sorted({p.name for p in b.glob('*.json')}|{p.name for p in a.glob('*.json')})
             if not names: raise ValueError('Датасет пуст: ожидается RESULTS/BEFORE_MASTER и RESULTS/AFTER_BETA')
-            started=time.monotonic(); log('Нормализация и сравнение',progress=1,script=config['normalizer'])
+            started=time.monotonic(); normalize_seconds=0; compare_seconds=0; log('Нормализация и сравнение',progress=1,script=config['normalizer'])
             for i,name in enumerate(names):
                 app=Path(name).stem
                 before=json.loads((b/name).read_text(encoding='utf-8')) if (b/name).exists() else {}
                 after=json.loads((a/name).read_text(encoding='utf-8')) if (a/name).exists() else {}
+                tick=time.monotonic()
                 union=list(norm.normalize(before,app,'BEFORE',config.get('normalize_params',{})))+list(norm.normalize(after,app,'AFTER',config.get('normalize_params',{})))
                 db.executemany('INSERT INTO normalized VALUES (?,?,?,?,?)',[(r['APP_ID'],r['SOURCE'],r['PATH'],r['ARRAY_KEY'],json.dumps(r,ensure_ascii=False)) for r in union])
+                normalize_seconds+=time.monotonic()-tick;tick=time.monotonic()
                 rows=list(comp.compare(union,config.get('compare_params',{})))
                 db.executemany('INSERT INTO comparison VALUES ('+','.join('?' for _ in COLUMNS)+')',[[r[c] for c in COLUMNS] for r in rows])
+                compare_seconds+=time.monotonic()-tick
                 segment=norm.segments(before,after,app,config.get('normalize_params',{}))
                 db.execute('INSERT INTO segments VALUES (?,?)',(app,json.dumps(segment,ensure_ascii=False)))
                 if i%100==0:
                     db.commit(); status['progress']=int(75*(i+1)/len(names));status['stage']=f'Обработано {i+1} / {len(names)}';dump(folder/'status.json',status)
             db.commit();log('Приведение и сравнение завершено',round(time.monotonic()-started,3),75,config['comparator'])
+            log('Нормализация: обработка и запись строк',round(normalize_seconds,3),script=config['normalizer'])
+            log('Сравнение: обработка и запись строк',round(compare_seconds,3),script=config['comparator'])
             db.executescript('CREATE INDEX cmp_path_diff ON comparison(PATH,DIFF_FLAG); CREATE INDEX cmp_type ON comparison(CHANGE_TYPE); CREATE INDEX cmp_key ON comparison(KEY); CREATE INDEX cmp_diff ON comparison(DIFF_FLAG,APP_ID);')
             log('Агрегация фактов counts',progress=80,script=config['aggregator']); started=time.monotonic()
             mart=Mart(db)

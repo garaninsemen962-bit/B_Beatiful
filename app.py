@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse,parse_qs,unquote,urlencode
 import store as s
-import service,sandbox,pages as p,reports
+import service,sandbox,pages as p,reports,accounts,lifecycle,pivot,ai_review
 from engine import Mart
 from uploads import MAX_UPLOAD
 
@@ -47,11 +47,14 @@ class Handler(BaseHTTPRequestHandler):
                 elif name:
                     text=data.decode('utf-8');fields.setdefault(name,[]).append(text)
             result={k:(v if k=='checks' else v[-1]) for k,v in fields.items()};result['_files']=files;return result
-        if ct.startswith('application/json'):return json.loads(raw)
+        if ct.startswith('application/json'):
+            value=json.loads(raw)
+            if not isinstance(value,dict):raise ValueError('JSON-запрос должен быть объектом')
+            return value
         data=parse_qs(raw.decode('utf-8'),keep_blank_values=True)
         return {k:(v if k=='checks' else v[-1]) for k,v in data.items()}
-    def get_resource(self,rid,minimum='reader'):
-        with s.db() as c:r=s.resource(c,rid);role=s.require(c,self.user,r,minimum);download=s.can_download(c,self.user,r)
+    def get_resource(self,rid,minimum='reader',include_deleted=False):
+        with s.db() as c:r=s.resource(c,rid,include_deleted=include_deleted);role=s.require(c,self.user,r,minimum);download=s.can_download(c,self.user,r)
         return r,role,download
     def do_GET(self):self.handle_request(False)
     def do_POST(self):self.handle_request(True)
@@ -68,16 +71,20 @@ class Handler(BaseHTTPRequestHandler):
             self.route(post)
         except (PermissionError,FileNotFoundError,ValueError,KeyError,sqlite3.IntegrityError,SyntaxError,UnicodeError,zipfile.BadZipFile) as ex:
             code=403 if isinstance(ex,PermissionError) else 404 if isinstance(ex,FileNotFoundError) else 400
-            if self.path_only.startswith('/api/'):self.json({'error':str(ex)},code)
+            if self.path_only.startswith('/api/') or self.path_only.endswith('/facts') or (self.path_only.endswith('/layout') and self.headers.get('Content-Type','').startswith('application/json')):self.json({'error':str(ex)},code)
             else:self.send(p.shell(self.user,'Не удалось выполнить действие','<div class="error">'+p.E(str(ex))+'</div><p>Вернитесь назад кнопкой браузера или откройте список ресурсов.</p>'),code)
         except Exception:
             traceback.print_exc();self.send(p.shell(self.user,'Ошибка сервера','<div class="error">Подробности записаны в журнал сервера.</div>'),500)
     def route(self,post):
         path=self.path_only;q=self.q;f=self.form;user=self.user
-        if path in ('/assets/style.css','/assets/app.js','/assets/editor.js') and not post:
-            file=s.ROOT/'web'/path.rsplit('/',1)[1];return self.send(file.read_bytes(),kind='text/css' if file.suffix=='.css' else 'text/javascript')
+        if path.startswith('/assets/') and not post:
+            relative=Path(path[len('/assets/'):]);file=s.ROOT/'web'/relative
+            if '..' in relative.parts or relative.is_absolute() or not file.is_file() or file.resolve().is_relative_to((s.ROOT/'web').resolve()) is False:raise FileNotFoundError('Файл не найден')
+            kinds={'.css':'text/css','.js':'text/javascript','.woff':'font/woff','.ttf':'font/ttf','.svg':'image/svg+xml','.txt':'text/plain; charset=utf-8','.json':'application/json; charset=utf-8'}
+            if file.suffix not in kinds:raise FileNotFoundError('Файл не найден')
+            return self.send(file.read_bytes(),kind=kinds[file.suffix])
         if path in ('/login','/register'):
-            if not post:return self.send(p.auth(path[1:]))
+            if not post:return self.send(p.auth(path[1:],q.get('message','')))
             if path=='/register':user=s.register(f['login'],f['display'],f['password'])
             else:user=s.authenticate(f['login'],f['password'])
             token=s.session(user);return self.send('',303,headers={'Set-Cookie':f'session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400','Location':'/runs' if user['status']=='active' else '/account'})
@@ -89,10 +96,31 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/account':return self.send(p.pending(user))
         if user['status']!='active':return self.redirect('/account')
         if path=='/':return self.redirect('/runs')
+        if path=='/profile':
+            with s.db() as c:target=dict(c.execute('SELECT * FROM users WHERE id=?',(user['id'],)).fetchone())
+            if post:
+                try:revoke=accounts.update(user,user['id'],f)
+                except (ValueError,PermissionError) as ex:return self.send(p.user_form(user,target,submitted=f,error=str(ex)),422)
+                return self.redirect('/login' if revoke else '/profile','Изменения сохранены. Войдите заново.' if revoke else 'Профиль обновлён')
+            return self.send(p.user_form(user,target,flash=q.get('message','')))
+        if path=='/trash':
+            resources,executions=lifecycle.trash(user);return self.send(p.trash_page(user,resources,executions,q.get('message','')))
+
         if path=='/api/script-info' and post:
             name,desc=s.script_info(f['code'],f['kind'],validate=False);return self.json({'name':name,'description':desc})
         if path.startswith('/admin'):
             if not user['admin']:raise PermissionError('Требуются права администратора')
+            if path.startswith('/admin/users/') and path.endswith('/edit'):
+                uid=path.split('/')[3]
+                with s.db() as c:
+                    target=c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone()
+                    if not target:raise FileNotFoundError('Пользователь не найден')
+                    target=dict(target)
+                if post:
+                    try:revoke=accounts.update(user,uid,f,admin_mode=True)
+                    except (ValueError,PermissionError) as ex:return self.send(p.user_form(user,target,True,submitted=f,error=str(ex)),422)
+                    return self.redirect('/login' if revoke and uid==user['id'] else '/admin','Изменения сохранены')
+                return self.send(p.user_form(user,target,True))
             if path=='/admin/demo' and post:service.import_demo(user);return self.redirect('/runs','Демонстрационные ресурсы добавлены')
             if path.startswith('/admin/users/') and post:
                 uid=path.rsplit('/',1)[1];status=f['status']
@@ -100,7 +128,7 @@ class Handler(BaseHTTPRequestHandler):
                 with s.db() as c:
                     target=c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone()
                     if not target or target['admin'] or target['id']==user['id']:raise PermissionError('Нельзя изменить этого пользователя')
-                    c.execute('UPDATE users SET status=? WHERE id=?',(status,uid))
+                    c.execute('UPDATE users SET status=?,revision=revision+1 WHERE id=?',(status,uid))
                     # Approval and blocking both revoke old sessions; pending users log in again.
                     c.execute('DELETE FROM sessions WHERE user_id=?',(uid,))
                     s.audit(c,user,None,'Изменение статуса пользователя',{'user':uid,'login':target['login'],'before':target['status'],'after':status})
@@ -158,10 +186,27 @@ class Handler(BaseHTTPRequestHandler):
             if kind=='dataset':return self.send(p.dataset_page(user,r,role,download,q.get('message','')))
             if kind=='config':return self.send(p.config_form(user,s.visible(user),r,role,q.get('message','')))
             if new:return self.send(p.run_new(user,s.visible(user,'config'),q.get('config','')))
-            with s.db() as c:executions=[dict(x) for x in c.execute('SELECT executions.*,users.display FROM executions JOIN users ON actor=users.id WHERE run=? ORDER BY created DESC',(rid,))]
+            with s.db() as c:executions=[dict(x) for x in c.execute('SELECT executions.*,users.display FROM executions JOIN users ON actor=users.id WHERE run=? AND executions.deleted_at IS NULL AND executions.purged_at IS NULL ORDER BY created DESC',(rid,))]
             return self.send(p.run_page(user,r,role,executions,q.get('message','')))
         if collection=='resources' and len(parts)==3:
-            rid,action=parts[1:];r,role,download=self.get_resource(rid)
+            rid,action=parts[1:];r,role,download=self.get_resource(rid,include_deleted=action in ('delete','restore','purge','history','version'))
+            if action in ('delete','restore','purge'):
+                if role!='owner':raise PermissionError('Удалять и восстанавливать ресурс может только владелец или администратор')
+                if r['purged_at'] is not None:raise FileNotFoundError('Ресурс удалён навсегда')
+                if post:
+                    errors=lifecycle.resource_action(user,rid,action,f['revision'],f.get('confirm',''));reports.facts.cache_clear()
+                    message='Ресурс восстановлен' if action=='restore' else 'Ресурс перемещён в корзину' if action=='delete' else 'Файлы ресурса удалены; история сохранена'
+                    if errors:message+='; некоторые файлы не удалось очистить — проверьте права на каталог хранения'
+                    return self.redirect('/'+p.URLS[r['kind']]+'/'+rid if action=='restore' else '/trash',message)
+                with s.db() as c:
+                    refs=lifecycle.dependencies(c,rid) if action=='purge' else []
+                    for ref in refs:
+                        rr=s.resource(c,ref.get('run',ref['id']),include_deleted=True)
+                        if s.role(c,user,rr):
+                            ref['label']=('Выполнение '+ref['id'][:12]+' · '+rr['name']) if ref['kind']=='execution' else rr['name']
+                            ref['url']='/trash' if rr['deleted_at'] is not None else '/runs/'+rr['id'] if ref['kind']=='execution' else '/resources/'+rr['id']+'/history'
+                        else:ref['label']='Недоступный связанный ресурс — обратитесь к его владельцу или администратору';ref['url']=''
+                return self.send(p.deletion_page(user,r,action,refs=refs))
             if action=='access':
                 self.get_resource(rid,'owner')
                 with s.db() as c:
@@ -210,21 +255,60 @@ class Handler(BaseHTTPRequestHandler):
             status=sandbox.status_file(folder/'result') if e['state'] in ('running','queued') else {}
             return self.json({'state':e['state'],'progress':status.get('progress',100 if e['state']=='done' else 0),'stage':status.get('stage',e['state']),'error':e['error']})
         raise FileNotFoundError('Страница не найдена')
-    def get_execution(self,eid):
+    def get_execution(self,eid,include_deleted=False):
         with s.db() as c:
             e=c.execute('SELECT * FROM executions WHERE id=?',(eid,)).fetchone()
-            if not e:raise FileNotFoundError('Выполнение не найдено')
-            r=s.resource(c,e['run']);s.require(c,self.user,r)
+            if not e or (not include_deleted and (e['deleted_at'] is not None or e['purged_at'] is not None)):raise FileNotFoundError('Выполнение не найдено или удалено')
+            r=s.resource(c,e['run'],include_deleted=include_deleted);s.require(c,self.user,r)
         return dict(e),r
     def execution(self,parts,post):
-        eid=parts[1];section='/'+parts[2] if len(parts)>2 else '';e,r=self.get_execution(eid);user=self.user;q=self.q;base='/executions/'+eid
+        eid=parts[1];section='/'+parts[2] if len(parts)>2 else '';e,r=self.get_execution(eid,include_deleted=section in ('/delete','/restore','/purge'));user=self.user;q=self.q;base='/executions/'+eid
+        if section in ('/delete','/restore','/purge'):
+            with s.db() as c:s.require(c,user,r,'owner')
+            if e['purged_at'] is not None or r['purged_at'] is not None:raise FileNotFoundError('Выполнение удалено навсегда')
+            if post:
+                errors=lifecycle.execution_action(user,eid,section[1:],self.form.get('confirm',''));reports.facts.cache_clear()
+                message='Выполнение восстановлено' if section=='/restore' else 'Выполнение перемещено в корзину' if section=='/delete' else 'Файлы выполнения удалены; история сохранена'
+                if errors:message+='; некоторые файлы не удалось очистить — проверьте права на каталог хранения'
+                return self.redirect(base if section=='/restore' else '/trash',message)
+            return self.send(p.deletion_page(user,e,section[1:],execution=True))
+        if section=='/layout':
+            if not post:raise ValueError('Для сохранения макета используйте кнопку сводной')
+            layout=self.form.get('layout',{})
+            if isinstance(layout,str):layout=json.loads(layout)
+            kind=self.form.get('kind','exact');pivot.save(user,eid,layout,kind)
+            return self.json({'saved':True}) if kind=='wdr' else self.redirect(base+'/pivot','Вид сохранён')
+        if section=='/facts':
+            if e['state']!='done':raise ValueError('Дождитесь завершения расчёта')
+            rows=[{**{k:v for k,v in fact.items() if k!='APP_IDS'},'CNT':len(apps)} for fact,apps in reports.selected(eid,pivot.query(q))]
+            if len(json.dumps(rows,ensure_ascii=False).encode())>950000:return self.json({'error':'Объём данных превышает лимит WebDataRocks 1 МБ. Сузьте фильтры; точная сводная выше доступна без этого ограничения.'},400)
+            return self.json({'rows':rows})
+        if section=='/recheck':
+            with s.db() as c:s.require(c,user,r,'editor')
+            if e['state']!='done':raise ValueError('Нужно успешно завершённое выполнение')
+            error=''
+            if post:
+                try:return self.redirect('/executions/'+service.recheck(user,eid,self.form))
+                except (ValueError,PermissionError) as ex:error=str(ex)
+            manifest=json.loads(e['manifest']);cfg=manifest.get('config',{});chosen=self.form.get('checks',cfg.get('checks',[]));fields=''
+            for item in s.visible(user,'script'):
+                if json.loads(item['body'])['script_kind']=='check':fields+='<label class="checklabel"><input type="checkbox" name="checks" value="'+item['id']+'" '+('checked' if item['id'] in chosen else '')+'>'+p.E(item['name'])+'<small>'+p.E(item['description'])+'</small></label>'
+            fields+='<label>Параметры: {ID проверки: {параметры}}</label>'+p.textarea('params',self.form.get('params',json.dumps(cfg.get('check_params',{}),ensure_ascii=False,indent=2)))+p.button('Запустить проверки по этой витрине')
+            body=p.execution_head(user,r,e,section)+'<div class="card"><p>Новые проверки выполняются в контейнере по готовой витрине. Будет создано отдельное выполнение с прежними данными и зафиксированными версиями выбранных проверок. Старые результаты сохраняются.</p>'+('<p class="error">'+p.E(error)+'</p>' if error else '')+p.form(user,base+'/recheck',fields)+'</div>'
+            return self.send(p.shell(user,'Проверки по готовой витрине',body,'run'),422 if error else 200)
+        if section=='/ai':
+            if post:
+                aid=ai_review.start(user,eid);return self.redirect(base+'/ai?analysis='+aid)
+            return self.send(self.ai_page(e,r))
         if post:raise ValueError('Результат выполнения неизменяем. Создайте новое выполнение.')
         head=p.execution_head(user,r,e,section)
+        with s.db() as c:
+            if s.role(c,user,r)=='owner' and e['state'] not in ('running','queued'):head+='<p>'+p.link(base+'/delete','Удалить выполнение','button danger')+'</p>'
         manifest=json.loads(e['manifest']);script_names={x['file']:x['name'] for x in manifest['scripts']}
         if section=='/code':
             srid=q.get('script');item=next((x for x in manifest['scripts'] if x['resource']==srid),None)
             if not item:raise FileNotFoundError('Скрипт не найден')
-            with s.db() as c:sr=s.resource(c,srid);allowed=s.can_download(c,user,sr)
+            with s.db() as c:sr=s.resource(c,srid,include_deleted=True);allowed=s.can_download(c,user,sr)
             if not allowed:raise PermissionError('Нет доступа к исходному коду выбранного скрипта')
             code=(s.STATE/'executions'/eid/'input/scripts'/item['file']).read_text(encoding='utf-8')
             return self.send(p.shell(user,item['name'],head+'<div class="card"><p>Зафиксированная версия '+str(item['revision'])+' · SHA-256 '+p.E(item['sha256'])+'</p><pre>'+p.E(code)+'</pre></div>','run'))
@@ -239,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
             logs=[]
             for x in status.get('logs',[]):
                 script=x.get('script');item=next((z for z in manifest['scripts'] if z['file']==script),None)
-                code=p.link(base+'/code?script='+item['resource'],item['name']) if item else ''
+                code=(p.link(base+'/code?script='+item['resource'],'Снимок v'+str(item['revision'])+' · '+item['name'])+'<br>'+p.link('/scripts/'+item['resource'],'Текущий скрипт')) if item else ''
                 logs.append([p.E(x.get('stage')),p.E(x.get('seconds')),code])
             body+='<div class="card"><h2>Журнал этапов</h2>'+p.table(['Этап','Секунды','Код'],logs)+'</div>'
             output=s.STATE/'executions'/eid/'console.log';text=output.read_text(encoding='utf-8',errors='replace')[:1024*1024] if output.exists() else ''
@@ -251,12 +335,17 @@ class Handler(BaseHTTPRequestHandler):
             for x in checks['rows']:
                 qs=urlencode({'ids':json.dumps(x['APP_IDS'])});rows.append([p.E(x['LABEL']),p.E(x['SOURCE'])+'<br>'+p.E(x['ARGUMENT']),str(x['CNT'])+' / '+str(x['TOTAL']),p.E(x['METRIC']),'<span class="badge '+('low ' if x['CONFIDENCE']=='LOW' else '')+('fail' if x['RESULT']=='FAIL' else 'pass')+'">'+p.E(x['RESULT'])+' · '+p.E(x['CONFIDENCE'])+'</span>',p.link(base+'/applications?'+qs,str(len(x['APP_IDS']))+' примеров')])
             body='<div class="card"><p class="muted">FAIL — условие проверки сработало. Бледные строки — LOW confidence. Количество примеров может быть ограничено параметрами.</p>'+p.table(['Проверка','Срез / аргумент','Количество','Метрика','Результат','Примеры'],rows)+'</div>'
+            with s.db() as c:analysis=c.execute("SELECT a.*,u.display FROM analyses a JOIN users u ON u.id=a.actor WHERE execution=? AND a.state='done' ORDER BY a.created DESC LIMIT 1",(eid,)).fetchone()
+            body+='<div class="card"><h2>Второе мнение Gemini</h2>'+(p.ai_result(dict(analysis)) if analysis else '<p>Анализ ещё не запрашивался или не завершён.</p>')+p.link(base+'/ai','Открыть анализ и историю запросов')+'</div>'
             if section=='/export':
-                origin='http://'+self.headers['Host'];body=body.replace('href="/','href="'+p.E(origin)+'/')
+                origin=os.environ.get('DD_PUBLIC_URL','http://'+self.headers['Host']).rstrip('/')
+                parsed=urlparse(origin)
+                if parsed.scheme not in ('http','https') or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path:raise ValueError('DD_PUBLIC_URL: ожидается http(s)://имя-сервера[:порт] без пути')
+                body=body.replace('href="/','href="'+p.E(origin)+'/')
                 doc='<!doctype html><html lang="ru"><meta charset="utf-8"><title>Отчёт проверок</title><style>'+ (s.ROOT/'web/style.css').read_text()+'</style><main><h1>'+p.E(r['name'])+'</h1><p>Выполнение '+eid+' · '+p.date(e['created'])+'</p>'+p.link(origin+base+'/pivot','Открыть сводный отчёт приложения')+body+'</main></html>'
                 return self.send(doc,headers={'Content-Disposition':'attachment; filename="report-'+eid+'.html"'})
             return self.send(p.shell(user,'Отчёт проверок',head+p.link(base+'/export','Скачать HTML','button')+body,'run'))
-        if section=='/pivot':return self.pivot(e,r,head)
+        if section=='/pivot':return self.send(pivot.render(user,e,head,q))
         if section=='/applications':
             if len(parts)>3:
                 app=parts[3]
@@ -265,37 +354,58 @@ class Handler(BaseHTTPRequestHandler):
                 if not rows:raise FileNotFoundError('Заявка не найдена')
                 allrows=q.get('all')=='1'
                 body=head+'<p>'+p.link(base+'/applications?'+urlencode({k:v for k,v in q.items() if k not in ('all',)}),'← Назад к выбранному списку')+'</p>'+p.link(self.path_only+'?'+urlencode({**q,'all':'0' if allrows else '1'}),'Показать только изменения' if allrows else 'Показать все атрибуты','button')
-                body+='<div class="card">'+p.table(['Путь','Ключ массива','До','После','Тип'],[[p.E(x['PATH']),p.E(x['ARRAY_KEY']),'<i>отсутствует</i>' if x['CHANGE_TYPE']=='ATTRIBUTE_NEW' else p.E(json.dumps(x['VALUE_BEFORE'],ensure_ascii=False)),'<i>отсутствует</i>' if x['CHANGE_TYPE']=='ATTRIBUTE_LOST' else p.E(json.dumps(x['VALUE_AFTER'],ensure_ascii=False)),p.E(x['CHANGE_TYPE'])] for x in rows if allrows or x['DIFF_FLAG']])+'</div><details class="card"><summary>Разрезы и сведения по продуктам</summary><pre>'+p.E(json.dumps(seg,ensure_ascii=False,indent=2))+'</pre></details>'
+                focus=q.get('focus_path') or json.loads(q.get('filter','{}')).get('PATH')
+                focused=[x for x in rows if x['PATH']==focus and ('focus_array' not in q or x['ARRAY_KEY']==q['focus_array'])]
+                if focused:
+                    with reports.connect(eid) as c:
+                        originals=[json.loads(x[0]) for x in c.execute('SELECT data FROM normalized WHERE APP_ID=? AND PATH=?',(app,focus))]
+                    body+='<section class="focused-attribute" id="focus"><h2>Выбранный атрибут: '+p.E(focus)+'</h2>'
+                    for x in focused:
+                        body+='<h3>Ключ массива: '+p.E(x['ARRAY_KEY'] or '—')+'</h3><p>'+p.E(pivot.TYPES.get(x['CHANGE_TYPE'],x['CHANGE_TYPE']))+'</p>'
+                        for source in ('BEFORE','AFTER'):
+                            original=next((n for n in originals if n['SOURCE']==source and n['ARRAY_KEY']==x['ARRAY_KEY']),None)
+                            raw=original.get('RAW') if original else None
+                            body+='<h4>'+source+'</h4><pre class="attribute-value">'+p.E(raw if original else 'Атрибут отсутствует')+'</pre>'
+                    body+='</section>'
+                body+='<div class="card">'+p.table(['Путь','Ключ массива','До','После','Тип'],[[p.link(self.path_only+'?'+urlencode({**q,'focus_path':x['PATH'],'focus_array':x['ARRAY_KEY']})+'#focus',x['PATH']),p.E(x['ARRAY_KEY']),'<i>отсутствует</i>' if x['CHANGE_TYPE']=='ATTRIBUTE_NEW' else p.E(json.dumps(x['VALUE_BEFORE'],ensure_ascii=False)),'<i>отсутствует</i>' if x['CHANGE_TYPE']=='ATTRIBUTE_LOST' else p.E(json.dumps(x['VALUE_AFTER'],ensure_ascii=False)),p.E(pivot.TYPES.get(x['CHANGE_TYPE'],x['CHANGE_TYPE']))] for x in rows if allrows or x['DIFF_FLAG']])+'</div><details class="card"><summary>Разрезы и сведения по продуктам</summary><pre>'+p.E(json.dumps(seg,ensure_ascii=False,indent=2))+'</pre></details>'
+
                 return self.send(p.shell(user,app,body,'run'))
             ids=set(json.loads(q['ids'])) if 'ids' in q else set().union(*(apps for _,apps in reports.selected(eid,q)))
             with reports.connect(eid) as c:apps=[x for x in Mart(c).segments() if x['APP_ID'] in ids]
             offset=max(0,int(q.get('offset',0)));rows=[]
-            for x in apps[offset:offset+100]:rows.append([p.link(base+'/applications/'+x['APP_ID']+'?'+urlencode(q),x['APP_ID']),p.E(x['DECISION_BEFORE']),p.E(x['DECISION_AFTER']),p.E(x['PRODUCTS'])])
-            body=head+'<p>'+str(len(apps))+' заявок. '+p.link(base+'/pivot?'+urlencode({k:v for k,v in q.items() if k not in ('filter','ids','offset')}),'Вернуться к сводной')+'</p><div class="card">'+p.table(['Заявка','До','После','Продукты'],rows)+'</div>'+self.pagination(base+'/applications',q,offset,len(apps))
+            for x in apps[offset:offset+100]:rows.append([p.link(base+'/applications/'+x['APP_ID']+'?'+urlencode(q)+('#focus' if q.get('focus_path') else ''),x['APP_ID']),p.E(x['DECISION_BEFORE']),p.E(x['DECISION_AFTER']),p.E(x['PRODUCTS'])])
+            body=head+'<p>'+str(len(apps))+' заявок. '+p.link(base+'/pivot?'+urlencode(pivot.query(json.loads(q['return'])) if 'return' in q else {k:v for k,v in q.items() if k not in ('filter','ids','offset','focus_path','focus_array')}),'Вернуться к сводной')+'</p><div class="card">'+p.table(['Заявка','До','После','Продукты'],rows)+'</div>'+self.pagination(base+'/applications',q,offset,len(apps))
             return self.send(p.shell(user,'Заявки',body,'run'))
         raise FileNotFoundError('Страница не найдена')
     def pagination(self,url,q,offset,total):
         return '<div class="row">'+(p.link(url+'?'+urlencode({**q,'offset':max(0,offset-100)}),'← Назад','button') if offset else '')+'<span>'+str(min(offset+1,total))+'–'+str(min(offset+100,total))+' из '+str(total)+'</span>'+(p.link(url+'?'+urlencode({**q,'offset':offset+100}),'Далее →','button') if offset+100<total else '')+'</div>'
-    def pivot(self,e,r,head):
-        q=self.q;eid=e['id'];base='/executions/'+eid;dims=q.get('group','PATH,CHANGE_TYPE').split(',')
-        allowed=('PATH','CHANGE_TYPE','ARRAY_KEY','VALUE_ADJUSTED','PREFIX','CLASS','SUFFIX','KEY')
-        if not dims or len(dims)>4 or any(x not in allowed for x in dims):raise ValueError('Выберите 1–4 измерения')
-        fields='<div class="row"><div><label>Группировки через запятую</label>'+p.input_('group',','.join(dims))+'</div><div><label>Путь содержит</label>'+p.input_('path',q.get('path',''))+'</div><div><label>Продукт (ID)</label>'+p.input_('product',q.get('product',''))+'</div><div><label>Различия</label>'+p.select('diff',[('1','С изменениями'),('0','Без изменений'),('all','Все')],q.get('diff','1'))+'</div><div><label>Решение</label>'+p.select('decision',[('','Любое'),('1','Изменилось'),('0','Не изменилось')],q.get('decision',''))+'</div>'+p.button('Построить')+'</div>'
-        groups={}
-        for f,apps in reports.selected(eid,q):
-            key=tuple(str(f[x]) for x in dims);g=groups.setdefault(key,{'BEFORE':set(),'AFTER':set()});g[f['SOURCE']].update(apps)
-        rows=sorted(groups.items(),key=lambda kv:(-len(kv[1]['BEFORE']|kv[1]['AFTER']),kv[0]));offset=max(0,int(q.get('offset',0)));render=[]
-        for key,g in rows[offset:offset+100]:
-            query={**q,'filter':json.dumps(dict(zip(dims,key)),ensure_ascii=False)};query.pop('offset',None)
-            render.append([*[p.E(x) for x in key],str(len(g['BEFORE'])),str(len(g['AFTER'])),p.link(base+'/applications?'+urlencode(query),str(len(g['BEFORE']|g['AFTER'])))])
-        body=head+'<div class="card"><form method="get">'+fields+'</form><p class="muted">Доступные измерения: '+', '.join(allowed)+'. Считаются уникальные заявки внутри группы и среза. Количества разных атрибутов нельзя суммировать как общее число заявок.</p></div><div class="card">'+p.table([*dims,'BEFORE','AFTER','Заявки'],render)+'</div>'+self.pagination(base+'/pivot',q,offset,len(rows))
-        return self.send(p.shell(self.user,'Сводный отчёт',body,'run'))
+    def ai_page(self,e,r):
+        eid=e['id'];base='/executions/'+eid
+        with s.db() as c:
+            ai_review.authorized(c,self.user,eid)
+            role=s.role(c,self.user,r)
+            analyses=[dict(x) for x in c.execute('SELECT a.*,u.display FROM analyses a JOIN users u ON u.id=a.actor WHERE execution=? ORDER BY created DESC',(eid,))]
+        ok,message=ai_review.configured();refs,payload=ai_review.evidence(eid)
+        body=p.execution_head(self.user,r,e,'/ai')+'<div class="card"><p>Gemini даёт второе мнение по агрегатам и результатам проверок. Внешнему API передаётся показанная ниже сводка; полные JSON, идентификаторы заявок, исходный код и пароли не передаются. Запрос использует квоту API вашего проекта.</p><p>'+p.E(message)+'</p>'
+        if ok and role in ('owner','editor'):body+=p.form(self.user,base+'/ai',p.button('Отправить сводку в Gemini'))
+        body+='<details><summary>Данные для отправки ('+str(len(json.dumps(payload,ensure_ascii=False).encode()))+' байт)</summary><pre>'+p.E(json.dumps(payload,ensure_ascii=False,indent=2))+'</pre></details></div>'
+        body+='<div class="card"><h2>История анализа</h2>'+p.table(['Дата','Автор','Модель','Состояние'],[[p.link(base+'/ai?analysis='+a['id'],p.date(a['created'])),p.E(a['display']),p.E(a['model']),p.E(a['state'])] for a in analyses])+'</div>'
+        selected=next((a for a in analyses if a['id']==self.q.get('analysis')),analyses[0] if analyses else None);extra=''
+        if selected:
+            body+='<div class="card"><h2>Ответ Gemini</h2><p>Модель: '+p.E(selected['model'])+' · '+p.date(selected['created'])+'</p>'
+            if selected['state'] in ('queued','running'):body+='<p role="status">Анализ выполняется в фоне…</p>';extra='<meta http-equiv="refresh" content="4">'
+            elif selected['state']=='failed':body+='<p class="error">'+p.E(selected['error'])+'</p>'
+            else:
+                body+=p.ai_result(selected)
+            body+='</div>'
+        return p.shell(self.user,'Анализ Gemini',body,'run',extra=extra)
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8765);parser.add_argument('--host',default='127.0.0.1');recovery=parser.add_mutually_exclusive_group();recovery.add_argument('--create-admin',metavar='LOGIN');recovery.add_argument('--reset-password',metavar='LOGIN');parser.add_argument('--import-demo',action='store_true');args=parser.parse_args()
     if args.reset_password:
         if args.import_demo:raise SystemExit('--import-demo не используется при сбросе пароля')
         if not (s.STATE/'app.sqlite').exists():raise SystemExit('База пользователей не найдена. Проверьте папку установки и DD_STATE.')
+        s.init()
         with s.db() as c:
             if not c.execute('SELECT id FROM users WHERE login=?',(args.reset_password,)).fetchone():raise SystemExit('Пользователь с таким логином не найден')
         password=getpass.getpass('Новый пароль (минимум 8 символов): ')
@@ -312,5 +422,5 @@ def main():
         if args.import_demo:service.import_demo(user)
         print('Администратор создан. Теперь запустите python app.py');return
     if args.import_demo:raise SystemExit('--import-demo используется вместе с --create-admin')
-    sandbox.recover();print(f'Откройте http://{args.host}:{args.port}',flush=True);ThreadingHTTPServer((args.host,args.port),Handler).serve_forever()
+    sandbox.recover();ai_review.recover();print(f'Откройте http://{args.host}:{args.port}',flush=True);ThreadingHTTPServer((args.host,args.port),Handler).serve_forever()
 if __name__=='__main__':main()

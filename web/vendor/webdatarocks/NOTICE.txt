@@ -1,0 +1,4 @@
+WebDataRocks 1.4.23. Copyright 2026 WebDataRocks / Flexmonster.
+Downloaded 2026-11-07 from https://cdn.webdatarocks.com/latest/
+Unmodified vendor distribution. Licensing terms: LICENSE.html and https://www.webdatarocks.com/license-agreement/
+The component attribution is retained.

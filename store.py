@@ -14,6 +14,13 @@ def db():
 def init():
     for p in ('objects','executions'): (STATE/p).mkdir(parents=True,exist_ok=True)
     with db() as c:
+        tables={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        migrations={'users':{'revision':'INTEGER NOT NULL DEFAULT 0'},'resources':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'},'executions':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'}}
+        need_migration=not {'views','analyses'}<=tables or any(col not in {r[1] for r in c.execute('PRAGMA table_info('+table+')')} for table,cols in migrations.items() for col in cols)
+        if 'users' in tables and need_migration and c.execute('SELECT count(*) FROM users').fetchone()[0]:
+            backup=STATE/'backups';backup.mkdir(exist_ok=True);target=sqlite3.connect(backup/('before-update-'+str(time.time_ns())+'.sqlite'))
+            try:c.backup(target)
+            finally:target.close()
         c.executescript('''PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,login TEXT UNIQUE,display TEXT,salt TEXT,password TEXT,status TEXT,admin INTEGER DEFAULT 0,created REAL);
         CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id),csrf TEXT,expires REAL);
@@ -22,11 +29,20 @@ def init():
         CREATE TABLE IF NOT EXISTS grants(resource TEXT REFERENCES resources(id),user_id TEXT REFERENCES users(id),role TEXT,download INTEGER DEFAULT 0,PRIMARY KEY(resource,user_id));
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,resource TEXT,actor TEXT,display TEXT,action TEXT,details TEXT,created REAL);
         CREATE TABLE IF NOT EXISTS executions(id TEXT PRIMARY KEY,run TEXT REFERENCES resources(id),actor TEXT,state TEXT,manifest TEXT,created REAL,finished REAL,error TEXT);
+        CREATE TABLE IF NOT EXISTS views(user_id TEXT REFERENCES users(id),execution TEXT REFERENCES executions(id),kind TEXT,body TEXT,updated REAL,PRIMARY KEY(user_id,execution,kind));
+        CREATE TABLE IF NOT EXISTS analyses(id TEXT PRIMARY KEY,execution TEXT REFERENCES executions(id),actor TEXT REFERENCES users(id),state TEXT,model TEXT,fingerprint TEXT,evidence TEXT,result TEXT,error TEXT,created REAL,finished REAL);
+        CREATE INDEX IF NOT EXISTS analyses_execution ON analyses(execution,created);
         CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT,'Audit is append-only'); END;
         CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT,'Audit is append-only'); END;
         CREATE TRIGGER IF NOT EXISTS version_no_update BEFORE UPDATE ON versions BEGIN SELECT RAISE(ABORT,'Versions are immutable'); END;
         CREATE TRIGGER IF NOT EXISTS version_no_delete BEFORE DELETE ON versions BEGIN SELECT RAISE(ABORT,'Versions are immutable'); END;
         ''')
+        migrations={'users':{'revision':'INTEGER NOT NULL DEFAULT 0'},'resources':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'},'executions':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'}}
+        missing=[(table,col,typ) for table,cols in migrations.items() for col,typ in cols.items() if col not in {row[1] for row in c.execute('PRAGMA table_info('+table+')')}]
+        if missing:
+            c.execute('BEGIN IMMEDIATE')
+            for table,col,typ in missing:c.execute('ALTER TABLE '+table+' ADD COLUMN '+col+' '+typ)
+        c.execute('CREATE INDEX IF NOT EXISTS resources_deleted ON resources(deleted_at,purged_at)')
 def uid():return secrets.token_hex(12)
 def audit(c,user,resource,action,details=None):
     c.execute('INSERT INTO audit(resource,actor,display,action,details,created) VALUES (?,?,?,?,?,?)',(resource,user['id'],user['display'],action,json.dumps(details or {},ensure_ascii=False),time.time()))
@@ -37,7 +53,7 @@ def register(login,display,password,admin=False):
     salt=secrets.token_hex(16);password_hash=hashlib.pbkdf2_hmac('sha256',password.encode(),bytes.fromhex(salt),250000).hex()
     user=dict(id=uid(),login=login,display=display.strip(),salt=salt,password=password_hash,status='active' if admin else 'pending',admin=int(admin),created=time.time())
     with db() as c:
-        c.execute('INSERT INTO users VALUES (:id,:login,:display,:salt,:password,:status,:admin,:created)',user)
+        c.execute('INSERT INTO users(id,login,display,salt,password,status,admin,created) VALUES (:id,:login,:display,:salt,:password,:status,:admin,:created)',user)
         audit(c,user,None,'Регистрация администратора' if admin else 'Заявка на регистрацию',{})
     return user
 def reset_password(login,password):
@@ -49,7 +65,7 @@ def reset_password(login,password):
         if not row:raise ValueError('Пользователь с таким логином не найден')
         user=dict(row);salt=secrets.token_hex(16)
         hashed=hashlib.pbkdf2_hmac('sha256',password.encode(),bytes.fromhex(salt),250000).hex()
-        c.execute('UPDATE users SET salt=?,password=? WHERE id=?',(salt,hashed,user['id']))
+        c.execute('UPDATE users SET salt=?,password=?,revision=revision+1 WHERE id=?',(salt,hashed,user['id']))
         c.execute('DELETE FROM sessions WHERE user_id=?',(user['id'],))
         audit(c,user,None,'Сброс пароля через консоль сервера',{'login':login,'source':'local_console','sessions_revoked':True})
 
@@ -62,13 +78,14 @@ def session(user):
     with db() as c:c.execute('INSERT INTO sessions VALUES (?,?,?,?)',(token,user['id'],csrf,time.time()+86400))
     return token
 
-def resource(c,rid):
+def resource(c,rid,include_deleted=False):
     r=c.execute('SELECT * FROM resources WHERE id=?',(rid,)).fetchone()
-    if not r:raise FileNotFoundError('Ресурс не найден')
+    if not r or (not include_deleted and (r['deleted_at'] is not None or r['purged_at'] is not None)):raise FileNotFoundError('Ресурс не найден или удалён')
     return dict(r)
 def role(c,user,r):
     if not user or user['status']!='active':return None
     if user['admin'] or r['owner']==user['id']:return 'owner'
+    if r.get('deleted_at') is not None or r.get('purged_at') is not None:return None
     g=c.execute('SELECT role FROM grants WHERE resource=? AND user_id=?',(r['id'],user['id'])).fetchone()
     roles=[]
     if r['visibility']=='public':roles.append(r['public_role'])
@@ -86,7 +103,7 @@ def can_download(c,user,r):
     return bool((r['visibility']=='public' and r['public_download']) or (r['visibility'] in ('named','public') and g and g[0]))
 def visible(user,kind=None):
     with db() as c:
-        rows=c.execute('SELECT * FROM resources'+(' WHERE kind=?' if kind else '')+' ORDER BY created DESC',(kind,) if kind else ()).fetchall()
+        rows=c.execute('SELECT * FROM resources WHERE deleted_at IS NULL AND purged_at IS NULL'+(' AND kind=?' if kind else '')+' ORDER BY created DESC',(kind,) if kind else ()).fetchall()
         result=[]
         for row in rows:
             r=dict(row);v=role(c,user,r)

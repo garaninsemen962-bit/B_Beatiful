@@ -7,7 +7,7 @@ from store import STATE
 @contextmanager
 def connect(eid):
     p=STATE/'executions'/eid/'artifacts/mart.sqlite'
-    c=sqlite3.connect(p.as_uri()+'?mode=ro',uri=True);deadline=time.monotonic()+8;c.set_progress_handler(lambda:int(time.monotonic()>deadline),10000);c.execute('PRAGMA query_only=ON');c.execute('PRAGMA trusted_schema=OFF')
+    c=sqlite3.connect(p.as_uri()+'?mode=ro&immutable=1',uri=True);deadline=time.monotonic()+8;c.set_progress_handler(lambda:int(time.monotonic()>deadline),10000);c.execute('PRAGMA query_only=ON');c.execute('PRAGMA trusted_schema=OFF')
     try:yield c
     finally:c.close()
 def artifact(eid,name):
@@ -26,6 +26,7 @@ def facts(eid):
         return rows
 def selected(eid,q):
     filters=json.loads(q.get('filter','{}'));allowed=None
+    if not isinstance(filters,dict) or len(filters)>12 or any(not isinstance(v,(str,int)) for v in filters.values()):raise ValueError('Неверные фильтры')
     if q.get('product') or q.get('decision'):
         with connect(eid) as c:allowed={x['APP_ID'] for x in Mart(c).segments() if (not q.get('product') or q['product'] in x['PRODUCTS'].split(';')) and (not q.get('decision') or str(x['DECISION_CHANGED'])==q['decision'])}
     for f in facts(eid):

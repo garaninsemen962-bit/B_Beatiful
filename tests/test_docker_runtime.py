@@ -20,4 +20,15 @@ class DockerRuntimeTest(unittest.TestCase):
     self.assertEqual(e['state'],'done',e.get('error','timeout'))
     summary=json.loads((s.STATE/'executions'/eid/'artifacts/summary.json').read_text())
     self.assertEqual(summary['changed_apps'],502);self.assertEqual(summary['decision_changed'],385)
+    # Exercise the read-only WAL/immutable mart mount of checks-only mode as well.
+    with s.db() as c:checks=json.loads(c.execute('SELECT manifest FROM executions WHERE id=?',(eid,)).fetchone()[0])['config']['checks']
+    child=service.recheck(user,eid,{'checks':checks,'params':'{}'});start=time.monotonic()
+    while time.monotonic()-start<180:
+     with s.db() as c:child_row=dict(c.execute('SELECT * FROM executions WHERE id=?',(child,)).fetchone())
+     if child_row['state'] in ('done','failed'):break
+     time.sleep(.5)
+    self.assertEqual(child_row['state'],'done',child_row.get('error','timeout'))
+    child_summary=json.loads((s.STATE/'executions'/child/'artifacts/summary.json').read_text())
+    self.assertEqual(child_summary,summary)
+
    finally:s.STATE=old;sandbox.STATE=old

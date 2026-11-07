@@ -22,7 +22,8 @@ def dataset_zip(raw,target):
             parts=path.parts
             if 'RESULTS' not in parts:continue
             i=parts.index('RESULTS');tail=parts[i+1:]
-            if len(tail)!=2 or tail[0] not in counts or not re.fullmatch(r'[A-Za-z0-9_-]+\.json',tail[1]):raise ValueError('Ожидается RESULTS/{BEFORE_MASTER,AFTER_BETA}/ID.json')
+            if len(tail)!=2 or tail[0] not in (*counts,'BEFORE','AFTER') or not re.fullmatch(r'[A-Za-z0-9_-]+\.json',tail[1]):raise ValueError('Ожидается RESULTS/{BEFORE_MASTER,AFTER_BETA}/ID.json')
+            tail=({'BEFORE':'BEFORE_MASTER','AFTER':'AFTER_BETA'}.get(tail[0],tail[0]),tail[1])
             key=tuple(tail)
             if key in seen:raise ValueError('Повтор файла в ZIP')
             seen.add(key);content=z.read(item);doc=json.loads(content.decode('utf-8-sig'))

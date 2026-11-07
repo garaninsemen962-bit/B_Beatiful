@@ -1,0 +1,156 @@
+{
+  "environment": {
+    "python": "3.12.14",
+    "platform": "linux",
+    "execution": "host; trusted bundled code only; NOT a Docker timing",
+    "cpu_limit": "not set"
+  },
+  "full_worker_seconds": 17.256,
+  "summary": {
+    "total_apps": 2002,
+    "changed_apps": 502,
+    "decision_changed": 385,
+    "rows": 289533,
+    "normalized_rows": 572221,
+    "facts": 20235,
+    "transitions": {
+      "REJECT → APPROVE": 112,
+      "REJECT → REJECT": 1233,
+      "APPROVE → APPROVE": 384,
+      "APPROVE → REJECT": 273
+    },
+    "change_types": {
+      "ATTRIBUTE_LOST": {
+        "attributes": 3010,
+        "apps": 329
+      },
+      "ATTRIBUTE_NEW": {
+        "attributes": 3835,
+        "apps": 335
+      },
+      "SAME": {
+        "attributes": 275121,
+        "apps": 2002
+      },
+      "VALUE_CHANGED": {
+        "attributes": 7567,
+        "apps": 502
+      }
+    }
+  },
+  "stages": [
+    {
+      "stage": "Нормализация и сравнение",
+      "seconds": null,
+      "time": 1794041110.9064171
+    },
+    {
+      "stage": "Приведение и сравнение завершено",
+      "seconds": 13.032,
+      "time": 1794041123.9379733
+    },
+    {
+      "stage": "Нормализация: обработка и запись строк",
+      "seconds": 9.397,
+      "time": 1794041123.9383795
+    },
+    {
+      "stage": "Сравнение: обработка и запись строк",
+      "seconds": 1.889,
+      "time": 1794041123.9387789
+    },
+    {
+      "stage": "Агрегация фактов counts",
+      "seconds": null,
+      "time": 1794041124.5885582
+    },
+    {
+      "stage": "Агрегаты готовы",
+      "seconds": 2.762,
+      "time": 1794041127.3513079
+    },
+    {
+      "stage": "Автоматические проверки",
+      "seconds": null,
+      "time": 1794041127.3518467
+    },
+    {
+      "stage": "Проверка: s_3a35995e0bf05e4dbc3d8dcf.py",
+      "seconds": 0.032,
+      "time": 1794041127.3840227
+    },
+    {
+      "stage": "Проверка: s_9af5d88f8960b55803183919.py",
+      "seconds": 0.131,
+      "time": 1794041127.5162477
+    },
+    {
+      "stage": "Проверка: s_16fcedd9275090fae497a67c.py",
+      "seconds": 0.007,
+      "time": 1794041127.5238054
+    },
+    {
+      "stage": "Проверка: s_f967c6e39bd238ed2cd67695.py",
+      "seconds": 0.143,
+      "time": 1794041127.667567
+    },
+    {
+      "stage": "Проверка: s_32fdf3d69704da6d2d4ab5a2.py",
+      "seconds": 0.129,
+      "time": 1794041127.7972887
+    },
+    {
+      "stage": "Готово",
+      "seconds": null,
+      "time": 1794041128.045872
+    }
+  ],
+  "http": {
+    "pivot_cold": {
+      "seconds": 0.186,
+      "status": 200,
+      "html_bytes": 50941
+    },
+    "pivot_warm": {
+      "seconds": 0.0195,
+      "status": 200,
+      "html_bytes": 50941
+    },
+    "layout_change": {
+      "seconds": 0.0158,
+      "status": 200,
+      "html_bytes": 11000
+    },
+    "filter": {
+      "seconds": 0.0118,
+      "status": 200,
+      "html_bytes": 18505
+    },
+    "applications": {
+      "seconds": 0.1634,
+      "status": 200,
+      "html_bytes": 22919
+    },
+    "application_card": {
+      "seconds": 0.0051,
+      "status": 200,
+      "html_bytes": 20571
+    },
+    "checks": {
+      "seconds": 0.0039,
+      "status": 200,
+      "html_bytes": 24841
+    },
+    "gemini_evidence": {
+      "seconds": 0.0207,
+      "status": 200,
+      "html_bytes": 28455
+    }
+  },
+  "recheck": {
+    "snapshot_and_mart_copy_seconds": 0.197,
+    "worker_seconds": 0.319,
+    "checks": 1
+  },
+  "mart_bytes": 385200128
+}

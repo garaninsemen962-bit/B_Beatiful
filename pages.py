@@ -15,6 +15,8 @@ def textarea(name,text,rows=5,cls=''):return f'<textarea class="{E(cls)}" name="
 def table(head,rows):return '<div class="tablewrap"><table><thead><tr>'+''.join('<th>'+E(h)+'</th>' for h in head)+'</tr></thead><tbody>'+''.join('<tr>'+''.join('<td>'+str(x)+'</td>' for x in row)+'</tr>' for row in rows)+'</tbody></table></div>'
 def select(name,options,current=None,multiple=False):
     currents=current if isinstance(current,list) else [current]
+    options=list(options)
+    options += [(value,'Недоступный ресурс: '+str(value)) for value in currents if value not in (None,'') and not any(key==value for key,_ in options)]
     return f'<select name="{E(name)}" {"multiple size=6" if multiple else ""}>'+''.join(f'<option value="{E(k)}" {"selected" if k in currents else ""}>{E(v)}</option>' for k,v in options)+'</select>'
 def form(user,action,body,multipart=False):
     csrf=user.get('csrf','') if user else ''
@@ -23,16 +25,17 @@ def shell(user,title,body,section='',flash='',extra=''):
     nav=''
     if user and user['status']=='active':
         nav=''.join(link('/'+URLS[k],v,'active' if section==k else '') for k,v in LABELS.items())
+        nav+=link('/profile','Мой профиль','active' if section=='profile' else '')+link('/trash','Корзина','active' if section=='trash' else '')
         if user['admin']:nav+=link('/admin','Администрирование','active' if section=='admin' else '')
-    identity=E(user['display'])+' · '+E(user['login'])+' '+form(user,'/logout',button('Выйти')) if user else link('/login','Войти')
+    identity=link('/profile',user['display'])+' · '+E(user['login'])+' '+form(user,'/logout',button('Выйти')) if user else link('/login','Войти')
     return '<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+E(title)+' · Decision Diff</title><link rel="stylesheet" href="/assets/style.css"><script defer src="/assets/editor.js"></script><script defer src="/assets/app.js"></script><header><div><strong>Decision Diff</strong><small>Совместный анализ изменений</small></div><div class="row">'+identity+'</div></header><div class="layout"><aside>'+nav+'</aside><main>'+('<div class="notice">'+E(flash)+'</div>' if flash else '')+'<h1>'+E(title)+'</h1>'+body+'<footer>Decision Diff 2 · серверное время отображается по Москве</footer></main></div>'+extra+'</html>'
-def auth(mode):
+def auth(mode,flash=''):
     register=mode=='register'
     body='<div class="card auth"><p>После регистрации администратор должен подтвердить вашу учётную запись.</p>' if register else '<div class="card auth"><p>Войдите в рабочую область команды.</p>'
     fields='<label>Логин латиницей</label>'+input_('login',required=True)
     if register:fields+='<label>Отображаемое имя</label>'+input_('display',required=True)
     fields+='<label>Пароль</label>'+input_('password',type='password',required=True)+'<p class="muted">Минимум 8 символов.</p>'+button('Зарегистрироваться' if register else 'Войти')
-    return shell(None,'Регистрация' if register else 'Вход',body+form(None,'/'+mode,fields)+ '<p>'+link('/login' if register else '/register','Уже есть аккаунт' if register else 'Создать аккаунт')+'</p></div>')
+    return shell(None,'Регистрация' if register else 'Вход',body+form(None,'/'+mode,fields)+ '<p>'+link('/login' if register else '/register','Уже есть аккаунт' if register else 'Создать аккаунт')+'</p></div>',flash=flash)
 def pending(user):return shell(user,'Состояние учётной записи','<div class="card"><p>Статус: <strong>'+E(user['status'])+'</strong></p><p>Если заявка ещё ожидает подтверждения, доступ появится после одобрения администратором.</p>'+link('/account','Обновить состояние','button')+'</div>')
 def listing(user,kind,rows,flash=''):
     body='<div class="row between"><p class="muted">Доступные вам ресурсы, включая общие и предоставленные поимённо.</p>'+link('/'+URLS[kind]+'/new','Создать' if kind in ('run','config') else 'Загрузить','button primary')+'</div>'
@@ -44,10 +47,15 @@ def listing(user,kind,rows,flash=''):
     body+='<div class="card">'+table(['Название / описание','Владелец','Доступ','Ваши права','Версия','Создан'],result)+'</div>'
     return shell(user,LABELS[kind],body,kind,flash)
 def resource_head(r,role,download=False):
-    path='/'+URLS[r['kind']]+'/'+r['id']
-    return '<div class="crumb">'+link('/'+URLS[r['kind']],LABELS[r['kind']])+' / '+E(r['name'])+'</div><div class="row"><span class="badge">Версия '+str(r['revision'])+'</span><span class="badge">'+E(role)+'</span>'+link('/resources/'+r['id']+'/history','История')+(link('/resources/'+r['id']+'/access','Доступ') if role=='owner' else '')+(link('/resources/'+r['id']+'/download','Скачать исходник') if download and r['kind'] in ('script','dataset') else '')+'</div><p class="description">'+E(r['description'])+'</p>'
+    path='/'+URLS[r['kind']]+'/'+r['id'];deleted=r.get('deleted_at') is not None;purged=r.get('purged_at') is not None
+    actions=link('/resources/'+r['id']+'/history','История')
+    if role=='owner':
+        if not deleted:actions+=link('/resources/'+r['id']+'/access','Доступ')+link('/resources/'+r['id']+'/delete','Удалить','button danger')
+        elif not purged:actions+=link('/resources/'+r['id']+'/restore','Восстановить','button')+link('/resources/'+r['id']+'/purge','Удалить навсегда','button danger')
+    if download and not deleted and r['kind'] in ('script','dataset'):actions+=link('/resources/'+r['id']+'/download','Скачать исходник')
+    return '<div class="crumb">'+link('/'+URLS[r['kind']],LABELS[r['kind']])+' / '+E(r['name'])+'</div><div class="row"><span class="badge">Версия '+str(r['revision'])+'</span><span class="badge">'+E(role)+'</span>'+actions+'</div><p class="description">'+E(r['description'])+'</p>'+('<p class="warning">Ресурс удалён навсегда. Сохранены только сведения об изменениях.</p>' if purged else '<p class="warning">Ресурс находится в корзине.</p>' if deleted else '')
 def script_form(user,r=None,code='',version=None,editable=True,submitted=None,error=''):
-    body=json.loads(r['body']) if r else {};rid=r['id'] if r else '';role='editor' if editable else 'reader'
+    body=json.loads(r['body']) if r else {};rid=r['id'] if r else '';role='owner' if r and (r['owner']==user['id'] or user['admin']) else 'editor' if editable else 'reader'
     values={'revision':r['revision'] if r else 0,'script_kind':body.get('script_kind','check'),'name':r['name'] if r else '', 'description':r['description'] if r else '', 'draft_token':secrets.token_hex(16)}
     if submitted:
         values.update({key:submitted[key] for key in values if key in submitted})
@@ -64,7 +72,7 @@ def script_form(user,r=None,code='',version=None,editable=True,submitted=None,er
     result=shell(user,r['name'] if r else 'Новый скрипт',bodyhtml,'script')
     return result.replace('<form method="post" action="/scripts/', '<form data-script-editor method="post" action="/scripts/')
 def dataset_page(user,r=None,role='owner',download=False,flash=''):
-    body=resource_head(r,role,download) if r else '<p>ZIP должен содержать RESULTS/BEFORE_MASTER/*.json и RESULTS/AFTER_BETA/*.json. Допускается общая внешняя папка.</p>'
+    body=resource_head(r,role,download) if r else '<p>ZIP должен содержать RESULTS/BEFORE_MASTER/*.json и RESULTS/AFTER_BETA/*.json. Также принимаются RESULTS/BEFORE и RESULTS/AFTER. Допускается общая внешняя папка.</p>'
     if r:
         data=json.loads(r['body']);body+='<div class="card">'+table(['Показатель','Значение'],[[E(k),E(v)] for k,v in data.items() if k not in ('folder',)])+'</div>'
     if not r or role in ('owner','editor'):
@@ -77,10 +85,13 @@ def config_form(user,resources,r=None,role='owner',flash='',action=None):
     fields+='<label>Датасет</label>'+select('dataset',[(x['id'],x['name']) for x in resources if x['kind']=='dataset'],cfg.get('dataset'))
     for key,kind in [('normalizer','normalizer'),('comparator','comparator'),('aggregator','aggregator')]:
         choices=[x for x in resources if x['kind']=='script' and json.loads(x['body'])['script_kind']==kind]
+        if cfg.get(key) and not any(item['id']==cfg[key] for item in choices):choices=[{'id':cfg[key],'name':'Недоступный ресурс: '+cfg[key],'description':'Ресурс удалён или доступ отозван. Выберите замену.'},*choices]
         fields+='<label>'+KINDS[kind]+'</label><select name="'+key+'" data-script-select>'+''.join('<option value="'+x['id']+'" data-description="'+E(x['description'])+'" '+('selected' if x['id']==cfg.get(key) else '')+'>'+E(x['name'])+'</option>' for x in choices)+'</select><p class="muted" data-description></p>'
     fields+='<label>Проверки и метрики</label>'
     for x in resources:
         if x['kind']=='script' and json.loads(x['body'])['script_kind']=='check':fields+='<label class="checklabel"><input type="checkbox" name="checks" value="'+x['id']+'" '+('checked' if x['id'] in cfg.get('checks',[]) else '')+'>'+E(x['name'])+'<small class="muted">'+E(x['description'])+'</small></label>'
+    for missing in set(cfg.get('checks',[]))-{item['id'] for item in resources}:
+        fields+='<label class="checklabel warning"><input type="checkbox" name="checks" value="'+E(missing)+'" checked>Недоступная проверка: '+E(missing)+'<small>Восстановите ресурс, запросите доступ или снимите отметку.</small></label>'
     params={k:cfg.get(k,{}) for k in ('normalize_params','compare_params','aggregate_params','check_params')}
     fields+='<label>Параметры (JSON)</label>'+textarea('params',json.dumps(params,ensure_ascii=False,indent=2),10)+'<p class="muted">check_params задаются по ID ресурса проверки. При выполнении используются последние доступные версии; точные версии и SHA-256 фиксируются в манифесте выполнения.</p>'+button('Сохранить конфигурацию')
     if r and role=='reader':body+='<div class="card"><pre>'+E(json.dumps(cfg,ensure_ascii=False,indent=2))+'</pre></div>'
@@ -112,7 +123,7 @@ def history(user,r,events,versions):
     rows=[[date(x['created']),E(x['display']),E(x['action']),'<details><summary>Подробности</summary><pre>'+E(json.dumps(json.loads(x['details']),ensure_ascii=False,indent=2))+'</pre></details>'] for x in events]
     vrows=[]
     for v in versions:
-        url='/scripts/'+r['id']+'?version='+str(v['revision']) if r['kind']=='script' else '/resources/'+r['id']+'/version?version='+str(v['revision'])
+        url='/scripts/'+r['id']+'?version='+str(v['revision']) if r['kind']=='script' and r.get('deleted_at') is None else '/resources/'+r['id']+'/version?version='+str(v['revision'])
         vrows.append([link(url,'Версия '+str(v['revision'])),E(v['name']),E(v['display']),date(v['created'])])
     return shell(user,'История изменений',resource_head(r,'reader')+'<div class="card"><h2>Версии</h2>'+table(['Версия','Название','Автор','Дата'],vrows)+'</div><div class="card"><h2>Журнал действий</h2>'+table(['Дата','Пользователь','Действие','Изменения'],rows)+'</div>',r['kind'])
 def admin(user,users,health,events,flash=''):
@@ -121,10 +132,61 @@ def admin(user,users,health,events,flash=''):
         controls=''
         if u['id']!=user['id'] and not u['admin']:
             controls=form(user,'/admin/users/'+u['id'],select('status',[('active','Подтвердить / разблокировать'),('rejected','Отклонить'),('blocked','Заблокировать')],u['status'])+button('Применить'))
-        rows.append([E(u['display'])+'<small>'+E(u['login'])+'</small>',E(u['status']),E('Администратор' if u['admin'] else 'Участник'),controls])
+        rows.append([E(u['display'])+'<small>'+E(u['login'])+'</small>',E(u['status']),E('Администратор' if u['admin'] else 'Участник'),link('/admin/users/'+u['id']+'/edit','Редактировать','button')+controls])
     body='<div class="card"><h2>Пользователи</h2>'+table(['Имя','Статус','Роль','Действие'],rows)+'</div><div class="card"><h2>Контейнерный исполнитель</h2><p>'+E(health)+'</p><p class="muted">Без готового Docker runner запуск Python запрещён. До двух одновременных расчётов.</p></div><div class="card"><h2>Последние административные события</h2>'+table(['Дата','Автор','Действие'],[[date(x['created']),E(x['display']),E(x['action'])] for x in events])+'</div>'
     return shell(user,'Администрирование',body,'admin',flash)
 def execution_head(user,r,e,section):
     base='/executions/'+e['id'];body='<div class="crumb">'+link('/runs','Прогоны')+' / '+link('/runs/'+r['id'],r['name'])+' / '+E(e['id'][:12])+'</div><div class="tabs">'
-    for suffix,label in [('', 'Обзор и журнал'),('/pivot','Сводная'),('/checks','Проверки'),('/applications','Заявки')]:body+=link(base+suffix,label,'active' if section==suffix else '')
+    with s.db() as c:can_execute=s.role(c,user,r) in ('owner','editor')
+    for suffix,label in [('', 'Обзор и журнал'),('/pivot','Сводная'),('/checks','Проверки'),('/applications','Заявки'),('/recheck','Новые проверки'),('/ai','Gemini')]:
+        if suffix!='/recheck' or can_execute:body+=link(base+suffix,label,'active' if section==suffix else '')
     return body+'</div>'
+
+def user_form(user,target,admin_mode=False,submitted=None,error='',flash=''):
+    values={k:target[k] for k in ('login','display','revision','status','admin')}
+    if submitted:values.update({k:submitted[k] for k in values if k in submitted})
+    fields=input_('revision',values['revision'],'hidden')
+    if error:fields+='<div class="error" role="alert">'+E(error)+'</div>'
+    fields+='<label>Отображаемое имя</label>'+input_('display',values['display'],required=True)+'<label>Логин</label>'+input_('login',values['login'],required=True)
+    if admin_mode:
+        fields+='<label>Статус</label>'+select('status',[('pending','Ожидает подтверждения'),('active','Активен'),('rejected','Отклонён'),('blocked','Заблокирован')],values['status'])+'<label>Роль на сервере</label>'+select('admin',[('0','Участник'),('1','Администратор')],str(values['admin']))
+    if not admin_mode or target['id']==user['id']:fields+='<label>Текущий пароль (для изменения логина или пароля)</label>'+input_('current_password',type='password')
+    fields+='<label>Новый пароль (оставьте пустым, чтобы не менять)</label>'+input_('new_password',type='password').replace('<input ','<input autocomplete="new-password" ')+'<label>Повторите новый пароль</label>'+input_('confirm_password',type='password').replace('<input ','<input autocomplete="new-password" ')+'<p class="muted">Новый пароль — минимум 8 символов. Смена логина, пароля, статуса или роли закрывает прежние сессии. Пароли в истории изменений не сохраняются.</p>'+button('Сохранить изменения')
+    action='/admin/users/'+target['id']+'/edit' if admin_mode else '/profile'
+    title='Пользователь: '+target['display'] if admin_mode else 'Мой профиль'
+    return shell(user,title,'<div class="card">'+form(user,action,fields)+'</div>','admin' if admin_mode else 'profile',flash)
+
+def trash_page(user,resources,executions,flash=''):
+    rows=[]
+    for r in resources:
+        actions=link('/resources/'+r['id']+'/restore','Восстановить','button')+' '+link('/resources/'+r['id']+'/purge','Удалить навсегда','button danger')
+        rows.append([E(LABELS[r['kind']]),E(r['name']),date(r['deleted_at']),actions+' '+link('/resources/'+r['id']+'/history','История')])
+    erows=[]
+    for e in executions:
+        actions=link('/executions/'+e['id']+'/restore','Восстановить','button')+' '+link('/executions/'+e['id']+'/purge','Удалить навсегда','button danger')
+        erows.append([E(e['id']),E(e['run_name'])+('<small>Прогон тоже в корзине: сначала восстановите его.</small>' if e['parent_deleted'] is not None else ''),date(e['deleted_at']),actions])
+    body='<p>Здесь видны ваши удалённые ресурсы; администратору доступны все. Корзина сохраняет файлы до окончательного удаления.</p><div class="card"><h2>Ресурсы</h2>'+table(['Тип','Название','Удалён','Действия'],rows)+'</div><div class="card"><h2>Отдельные выполнения</h2>'+table(['ID','Прогон','Удалён','Действия'],erows)+'</div>'
+    return shell(user,'Корзина',body,'trash',flash)
+
+def deletion_page(user,item,action,execution=False,refs=None):
+    labels={'delete':'Удалить в корзину','restore':'Восстановить','purge':'Удалить навсегда'};label=labels[action]
+    name=item['id'] if execution else item['name'];url=('/executions/' if execution else '/resources/')+item['id']+'/'+action
+    fields=''
+    if not execution:fields+=input_('revision',item['revision'],'hidden')
+    if action=='purge':
+        fields+='<p class="error">Будут удалены файлы и результаты. Восстановить их из приложения будет нельзя. Записи истории останутся.</p>'
+        if not execution and item['kind']=='run':fields+='<p>Будут также окончательно удалены все выполнения этого прогона.</p>'
+        fields+='<label>Для подтверждения введите '+('полный ID выполнения' if execution else 'точное название ресурса')+'</label>'+input_('confirm',required=True)
+    elif action=='delete':fields+='<p>Ресурс исчезнет из рабочих списков и станет недоступен по прямым ссылкам. Его можно будет восстановить из корзины.</p>'
+    else:fields+='<p>Ресурс вернётся в рабочие списки с прежними настройками доступа. Проверьте их после восстановления.</p>'
+    if refs:fields+='<div class="warning">Найдены связи с другими ресурсами или историей выполнений: '+str(len(refs))+'. Окончательное удаление будет заблокировано, пока эти связи существуют. Учитываются и старые версии настроек, и корзина.</div>'
+    if refs:fields+='<ul>'+''.join('<li>'+(link(ref['url'],ref['label']) if ref.get('url') else E(ref.get('label','Связанный ресурс')))+'</li>' for ref in refs)+'</ul>'
+    fields+='<div class="row space">'+button(label)+' '+link('/trash' if action!='delete' else ('/runs/'+item['run'] if execution else '/'+URLS[item['kind']]+'/'+item['id']),'Отмена','button')+'</div>'
+    return shell(user,label,'<div class="card"><h2>'+E(name)+'</h2>'+form(user,url,fields)+'</div>','trash' if action!='delete' else 'run' if execution else item['kind'])
+
+def ai_result(row):
+    result=json.loads(row['result']);evidence={x['id']:x for x in json.loads(row['evidence'])}
+    body='<p class="muted">Модель '+E(row['model'])+' · '+date(row['created'])+' · автор запроса '+E(row.get('display',''))+'</p><p>'+E(result['summary'])+'</p>'
+    for finding in result['findings']:
+        body+='<section class="finding '+E(finding['severity'])+'"><h3>'+E({'low':'Низкая','medium':'Средняя','high':'Высокая','critical':'Критическая'}[finding['severity']])+' важность</h3>'+''.join('<p><strong>'+label+':</strong> '+E(finding[key])+'</p>' for key,label in [('observation','Наблюдение'),('hypothesis','Гипотеза'),('recommendation','Что проверить')])+'<p>Основания: '+', '.join(link(evidence[x]['url'],x) for x in finding['evidence_ids'])+'</p></section>'
+    return body+'<h3>Ограничения</h3><ul>'+''.join('<li>'+E(x)+'</li>' for x in result['limitations'])+'</ul>'

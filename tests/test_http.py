@@ -93,9 +93,64 @@ class HttpTests(unittest.TestCase):
   rid=urllib.parse.urlparse(url).path.rsplit('/',1)[1]
   fields.update(revision='1',code='def run(mart, params=None):\n    # second version\n    return []\n')
   self.assertEqual(self.request(self.a,'/scripts/'+rid,fields)[0],200)
+  before=len(list((s.STATE/'objects').glob('*.py')))
   fields['code']='def run(mart, params=None):\n    # unsaved conflict: ВАЖНО\n    return []\n'
   status,body,_=self.request(self.a,'/scripts/'+rid,fields);self.assertEqual(status,422);self.assertIn('ВАЖНО',body);self.assertIn('уже изменён',body)
   with s.db() as c:self.assertEqual(s.resource(c,rid)['revision'],2)
+  self.assertEqual(len(list((s.STATE/'objects').glob('*.py'))),before)
+ def test_profile_admin_edit_and_session_revocation(self):
+  uid=self.approve();csrf=self.csrf(self.b,'/profile')
+  with s.db() as c:revision=c.execute('SELECT revision FROM users WHERE id=?',(uid,)).fetchone()[0]
+  status,body,_=self.request(self.b,'/profile',{'csrf':csrf,'revision':revision,'display':'Обновлённое имя','login':'member','admin':'1','status':'blocked'})
+  self.assertEqual(status,200,body);self.assertIn('Обновлённое имя',body)
+  self.assertEqual(self.request(self.b,'/admin/users/'+self.admin['id']+'/edit')[0],403)
+  with s.db() as c:
+   target=dict(c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone());self.assertEqual(target['admin'],0);self.assertEqual(target['status'],'active')
+  status,body,_=self.request(self.b,'/profile',{'csrf':csrf,'revision':target['revision'],'login':'changed','display':'Обновлённое имя','current_password':'wrong'})
+  self.assertEqual(status,422);self.assertIn('Текущий пароль',body)
+  status,body,url=self.request(self.b,'/profile',{'csrf':csrf,'revision':target['revision'],'login':'changed','display':'Обновлённое имя','current_password':'test-password','new_password':'new-password','confirm_password':'new-password'})
+  self.assertIn('/login',url);self.assertEqual(s.authenticate('changed','new-password')['id'],uid)
+  self.assertIn('/login',self.request(self.b,'/runs')[2])
+  admincsrf=self.csrf(self.a,'/admin')
+  with s.db() as c:revision=c.execute('SELECT revision FROM users WHERE id=?',(uid,)).fetchone()[0]
+  self.assertEqual(self.request(self.a,'/admin/users/'+uid+'/edit')[0],200)
+  status,body,_=self.request(self.a,'/admin/users/'+uid+'/edit',{'csrf':admincsrf,'revision':revision,'login':'changed','display':'Админ команды','status':'active','admin':'1','new_password':'admin-reset-pass','confirm_password':'admin-reset-pass'})
+  self.assertEqual(status,200,body);self.assertEqual(s.authenticate('changed','admin-reset-pass')['admin'],1)
+ def test_resource_delete_restore_purge_and_permissions_http(self):
+  uid=self.approve()
+  with s.db() as c:
+   owner=dict(c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone())
+   rid=s.create(c,owner,'config','Удаляемая конфигурация','',{},'public')
+   c.execute("UPDATE resources SET public_role='editor' WHERE id=?",(rid,))
+  csrf=self.csrf(self.b);self.assertEqual(self.request(self.b,'/resources/'+rid+'/delete')[0],200)
+  with s.db() as c:self.assertIsNone(s.resource(c,rid)['deleted_at'])
+  self.assertEqual(self.request(self.b,'/resources/'+rid+'/delete',{'revision':'1'})[0],403)
+  status,body,_=self.request(self.b,'/resources/'+rid+'/delete',{'csrf':csrf,'revision':'1'});self.assertEqual(status,200,body);self.assertIn('Удаляемая конфигурация',body)
+  self.assertEqual(self.request(self.b,'/configurations/'+rid)[0],404)
+  self.assertEqual(self.request(self.b,'/resources/'+rid+'/history')[0],200)
+  status,body,_=self.request(self.b,'/resources/'+rid+'/restore',{'csrf':csrf,'revision':'1'});self.assertEqual(status,200,body)
+  self.assertEqual(self.request(self.b,'/configurations/'+rid)[0],200)
+  self.request(self.b,'/resources/'+rid+'/delete',{'csrf':csrf,'revision':'1'})
+  self.assertEqual(self.request(self.b,'/resources/'+rid+'/purge',{'csrf':csrf,'revision':'1','confirm':'wrong'})[0],400)
+  status,body,_=self.request(self.b,'/resources/'+rid+'/purge',{'csrf':csrf,'revision':'1','confirm':'Удаляемая конфигурация'});self.assertEqual(status,200,body)
+  self.assertEqual(self.request(self.b,'/resources/'+rid+'/restore')[0],404)
+  self.assertEqual(self.request(self.b,'/resources/'+rid+'/history')[0],200)
+ def test_editor_cannot_delete_and_execution_urls_hidden(self):
+  uid=self.approve();csrf=self.csrf(self.b)
+  with s.db() as c:
+   rid=s.create(c,self.admin,'run','Проверка удаления','',{'config':{}},'public');c.execute("UPDATE resources SET public_role='editor' WHERE id=?",(rid,))
+   eid=s.uid();c.execute('INSERT INTO executions(id,run,actor,state,manifest,created,error) VALUES (?,?,?,?,?,0,?)',(eid,rid,self.admin['id'],'failed',json.dumps({'scripts':[]}),''))
+  self.assertEqual(self.request(self.b,'/resources/'+rid+'/delete')[0],403)
+  self.assertEqual(self.request(self.b,'/executions/'+eid+'/delete',{'csrf':csrf})[0],403)
+  self.assertEqual(self.request(self.b,'/executions/'+eid)[0],200)
+  admincsrf=self.csrf(self.a)
+  status,body,_=self.request(self.a,'/executions/'+eid+'/delete',{'csrf':admincsrf});self.assertEqual(status,200,body)
+  self.assertEqual(self.request(self.b,'/executions/'+eid)[0],404)
+  self.assertEqual(self.request(self.b,'/api/executions/'+eid)[0],404)
+  status,body,_=self.request(self.a,'/executions/'+eid+'/restore',{'csrf':admincsrf});self.assertEqual(status,200,body)
+  self.assertEqual(self.request(self.b,'/executions/'+eid)[0],200)
+  self.request(self.a,'/resources/'+rid+'/delete',{'csrf':admincsrf,'revision':'1'})
+  self.assertEqual(self.request(self.b,'/executions/'+eid)[0],404)
  def test_report_pipeline_on_trusted_bundled_fixture(self):
   # This is explicitly a test of trusted bundled procedures, not a host execution mode.
   import service,subprocess,shutil

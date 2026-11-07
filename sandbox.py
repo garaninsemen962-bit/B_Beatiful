@@ -20,7 +20,7 @@ def available():
         return (True,'Docker runner готов') if r.returncode==0 else (False,'Docker daemon недоступен')
     except (OSError,subprocess.TimeoutExpired):return False,'Docker не отвечает'
 
-def command(eid,folder,dataset,image=None):
+def command(eid,folder,dataset,image=None,source_mart=None):
     # No application state, user database, Docker socket, or host env are mounted.
     result=(folder/'result').resolve();inp=(folder/'input').resolve()
     def mount(source,dest,ro=False):
@@ -29,7 +29,7 @@ def command(eid,folder,dataset,image=None):
     return ['docker','run','--name','dd-'+eid,'--pull=never','--network=none','--read-only','--user=65534:65534',
         '--cap-drop=ALL','--security-opt=no-new-privileges','--pids-limit=64','--memory=1g','--memory-swap=1g','--cpus=2',
         '--ulimit','fsize=1073741824:1073741824','--ulimit','nofile=256:256','--tmpfs','/tmp:rw,noexec,nosuid,size=64m',
-        '--log-driver=none',*mount(dataset.resolve(),'/dataset',True),*mount(result,'/output'),
+        '--log-driver=none',*(mount(dataset.resolve(),'/dataset',True) if dataset else mount(source_mart.resolve(),'/source/mart.sqlite',True)),*mount(result,'/output'),
         *mount(inp/'scripts','/output/scripts',True),*mount(inp/'config.json','/output/config.json',True),
         image or IMAGE,'python','-I','-u','/app/engine.py','/output']
 
@@ -54,12 +54,13 @@ def finish(eid,state,error=''):
         user=dict(c.execute('SELECT * FROM users WHERE id=?',(e['actor'],)).fetchone())
         audit(c,user,e['run'],'Выполнение завершено',{'execution':eid,'state':state,'error':error})
 
-def launch(eid,dataset):
+def launch(eid,dataset=None):
     folder=STATE/'executions'/eid;result=folder/'result';result.mkdir(exist_ok=True);result.chmod(0o777)
     # Reserve output paths before bind mounting them read-only inside the output directory.
     (result/'scripts').mkdir(exist_ok=True);(result/'config.json').touch()
     with db() as c:manifest=json.loads(c.execute('SELECT manifest FROM executions WHERE id=?',(eid,)).fetchone()[0])
-    cmd=command(eid,folder,dataset,manifest['image'])
+    checks_only=manifest.get('mode')=='checks'
+    cmd=command(eid,folder,dataset,manifest['image'],folder/'input/mart.sqlite' if checks_only else None)
     def work():
         error='';state='failed';p=None
         try:
@@ -93,8 +94,9 @@ def launch(eid,dataset):
                 # API never opens SQLite or JSON directly in the container-writable directory.
                 final=folder/'artifacts';final.mkdir()
                 for name in ('mart.sqlite','summary.json','checks.json','status.json'):
-                    source=result/name
-                    if source.is_symlink() or not source.is_file() or source.resolve().parent!=result.resolve():raise ValueError('Недопустимый артефакт: '+name)
+                    source=(folder/'input/mart.sqlite') if checks_only and name=='mart.sqlite' else result/name
+                    expected=(folder/'input').resolve() if checks_only and name=='mart.sqlite' else result.resolve()
+                    if source.is_symlink() or not source.is_file() or source.resolve().parent!=expected:raise ValueError('Недопустимый артефакт: '+name)
                     if source.stat().st_size>LIMIT_BYTES:raise ValueError('Слишком большой артефакт')
                     with open(source,'rb') as src,open(final/name,'wb') as dest:shutil.copyfileobj(src,dest)
                 state='done'
@@ -105,7 +107,9 @@ def launch(eid,dataset):
             if p:
                 try:p.wait(timeout=5)
                 except subprocess.TimeoutExpired:p.kill();p.wait()
-            if state=='done':shutil.rmtree(result,ignore_errors=True)
+            if state=='done':
+                shutil.rmtree(result,ignore_errors=True)
+                if checks_only:(folder/'input/mart.sqlite').unlink(missing_ok=True)
             finish(eid,state,error)
     threading.Thread(target=work,daemon=True).start()
 

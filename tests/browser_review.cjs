@@ -1,0 +1,26 @@
+const {chromium}=require('playwright');
+(async()=>{
+ const browser=await chromium.launch({...(process.env.DD_BROWSER_EXECUTABLE?{executablePath:process.env.DD_BROWSER_EXECUTABLE}:{}),headless:true,args:['--no-sandbox']});
+ const page=await browser.newPage({viewport:{width:1440,height:1080}}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')console.log('CONSOLE',m.text())});
+ page.on('dialog',dialog=>dialog.accept());
+ const external=[];page.on('request',request=>{if(!request.url().startsWith(process.env.DD_QA_URL))external.push(request.url())});
+ const base=process.env.DD_QA_URL,eid=process.env.DD_QA_EID,url=base+'/executions/'+eid;
+ await page.goto(base+'/login');await page.locator('[name=login]').fill('admin');await page.locator('[name=password]').fill('test-password');await page.getByRole('button',{name:'Войти',exact:true}).click();
+ await page.goto(url+'/pivot');await page.locator('[data-pivot-layout]').waitFor();
+ await page.screenshot({path:process.env.DD_QA_SCREENSHOTS+'/pivot.png',fullPage:true});
+ await page.locator('[data-field=CHANGE_TYPE]').dragTo(page.locator('[data-zone=columns]'));await page.getByRole('button',{name:'Построить',exact:true}).click();
+ if(!page.url().includes('columns=SOURCE%2CCHANGE_TYPE'))throw Error('Drag/drop axes did not submit');
+ await page.getByRole('button',{name:'Сохранить этот вид для меня'}).click();await page.reload();
+ if(await page.locator('[name=columns]').inputValue()!=='SOURCE,CHANGE_TYPE')throw Error('Layout not restored');
+ await page.locator('[data-wdr-panel] summary').click();await page.waitForFunction(()=>document.querySelector('[data-wdr-message]').textContent.includes('Конструктор готов'),{timeout:20000});
+ console.log('WDR',await page.locator('[data-wdr-message]').innerText());await page.screenshot({path:process.env.DD_QA_SCREENSHOTS+'/wdr.png',fullPage:true});
+ await page.locator('[data-wdr-save]').click();await page.waitForFunction(()=>document.querySelector('[data-wdr-message]').textContent.includes('Макет сохранён'));
+ await page.goto(url+'/applications/A1?focus_path=a');await page.locator('#focus').waitFor();console.log('FOCUS',await page.locator('#focus').innerText());
+ await page.goto(url+'/ai');await page.getByRole('button',{name:'Отправить сводку в Gemini'}).click();await page.getByRole('heading',{name:'Средняя важность'}).waitFor({timeout:15000});await page.screenshot({path:process.env.DD_QA_SCREENSHOTS+'/ai.png',fullPage:true});
+ await page.goto(url+'/checks');if(!(await page.locator('body').innerText()).includes('Возможна смена правила'))throw Error('AI result not in checks report');
+ await page.goto(url+'/recheck');await page.getByRole('button',{name:'Запустить проверки по этой витрине'}).waitFor();
+ await page.setViewportSize({width:860,height:980});await page.goto(url+'/pivot');await page.screenshot({path:process.env.DD_QA_SCREENSHOTS+'/pivot-narrow.png',fullPage:true});
+ await page.goto(base+'/scripts/new');await page.locator('[name=name]').fill('Черновик');await page.locator('[name=code]').fill('print(123)');await page.getByRole('button',{name:'Создать скрипт',exact:true}).click();if(await page.locator('[name=code]').inputValue()!=='print(123)')throw Error('Draft lost after validation');await page.locator('.python-editor').waitFor();
+ console.log('EXTERNAL_REQUESTS',external.length);if(external.length)throw Error('Unexpected external request '+external.join(','));
+ console.log('PAGE_ERRORS',JSON.stringify(errors));if(errors.length)throw Error('Browser JavaScript errors');await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});
