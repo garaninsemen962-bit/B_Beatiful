@@ -1,10 +1,15 @@
 """Exact set-union pivot, with server-side per-user layouts."""
 import json,time
 from urllib.parse import urlencode
-import pages as p,store as s,reports
+import pages as p,store as s,reports,labels
 FIELDS=('PATH','CHANGE_TYPE','ARRAY_KEY','VALUE_ADJUSTED','PREFIX','CLASS','SUFFIX','KEY','SOURCE','DIFF_FLAG')
 TYPES={'VALUE_CHANGED':'Значение изменилось','ATTRIBUTE_NEW':'Атрибут появился','ATTRIBUTE_LOST':'Атрибут исчез','SAME':'Без изменений'}
-def label(field,value):return TYPES.get(value,value) if field=='CHANGE_TYPE' else value
+def label(field,value):return labels.value(field,value)
+def cell(field,value):
+    # Friendly name for the user, technical path kept underneath for precision.
+    shown=label(field,value)
+    if field=='PATH' and shown!=value:return p.E(shown)+'<br><small class="muted">'+p.E(value)+'</small>'
+    return p.E(shown)
 
 def query(value):
     allowed={'group','columns','path','product','diff','decision','filter','offset','column_offset'}
@@ -55,23 +60,23 @@ def render(user,e,head,q):
         return p.link(base+'/applications?'+urlencode(selected),len(apps)) if apps else '0'
     rendered=[]
     for rk in rkeys[off:off+100]:
-        filt=dict(zip(rows_dims,rk));rendered.append([*[p.E(label(k,v)) for k,v in zip(rows_dims,rk)],*[href({**filt,**dict(zip(cols_dims,ck))},cells.get((rk,ck),set())) for ck in shown],href(filt,rowsets[rk])])
+        filt=dict(zip(rows_dims,rk));rendered.append([*[cell(k,v) for k,v in zip(rows_dims,rk)],*[href({**filt,**dict(zip(cols_dims,ck))},cells.get((rk,ck),set())) for ck in shown],href(filt,rowsets[rk])])
     total=['<strong>Уникальные заявки</strong>']+['']*max(0,len(rows_dims)-1)+[href(dict(zip(cols_dims,ck)),colsets[ck]) for ck in shown]+[href({},allapps)]
     def area(name,title,values):
-        return '<div class="pivot-zone" data-zone="'+name+'"><h3>'+title+'</h3>'+''.join('<div class="pivot-field" draggable="true" data-field="'+v+'">'+p.E(v)+' <button type="button" data-move="'+v+'" aria-label="Переместить '+v+'">↔</button></div>' for v in values)+'</div>'
+        return '<div class="pivot-zone" data-zone="'+name+'"><h3>'+title+'</h3>'+''.join('<div class="pivot-field" draggable="true" data-field="'+v+'" title="'+v+'">'+p.E(labels.field(v))+' <button type="button" data-move="'+v+'" aria-label="Переместить '+p.E(labels.field(v))+'">↔</button></div>' for v in values)+'</div>'
     controls=area('unused','Доступные поля',[x for x in FIELDS if x not in rows_dims+cols_dims])+area('group','Строки',rows_dims)+area('columns','Столбцы',cols_dims)
     fields=p.input_('group',q['group'],'hidden')+p.input_('columns',q['columns'],'hidden')
     fields+='<div class="pivot-areas">'+controls+'</div><p class="muted">Перетащите поля между областями. Кнопка ↔ перемещает поле без мыши. Порядок полей: слева направо.</p>'
     for key,title,widget in [('path','Путь содержит',p.input_('path',q.get('path',''))),('product','Продукт (ID)',p.input_('product',q.get('product',''))),('diff','Различия',p.select('diff',[('1','С изменениями'),('0','Без изменений'),('all','Все')],q.get('diff','1'))),('decision','Решение',p.select('decision',[('','Любое'),('1','Изменилось'),('0','Не изменилось')],q.get('decision','')))]:fields+='<label>'+title+widget+'</label>'
-    fields+='<label>Фильтр по полю'+p.select('filter_field',[('','Не задан')]+[(x,x) for x in FIELDS])+'</label><label>Точное значение'+p.input_('filter_value')+'</label>'+p.input_('filter',q.get('filter','{}'),'hidden')+'<p>Точный фильтр: <code>'+p.E(q.get('filter','{}'))+'</code> <button type="button" data-clear-filter>Очистить</button></p>'+p.button('Построить')
+    fields+='<label>Фильтр по полю'+p.select('filter_field',[('','Не задан')]+[(x,labels.field(x)) for x in FIELDS])+'</label><label>Точное значение'+p.input_('filter_value')+'</label>'+p.input_('filter',q.get('filter','{}'),'hidden')+'<p>Точный фильтр: <code>'+p.E(q.get('filter','{}'))+'</code> <button type="button" data-clear-filter>Очистить</button></p>'+p.button('Построить')
     body=head+'<div class="card"><h2>Уникальные заявки</h2><form method="get" data-pivot-layout>'+fields+'</form>'+p.form(user,base+'/layout',p.input_('layout',json.dumps(q,ensure_ascii=False),'hidden')+p.button('Сохранить этот вид для меня'))+'<p class="muted">Одна заявка учитывается один раз внутри ячейки и итогов. Итог «Все срезы» объединяет BEFORE и AFTER. Нажмите число для списка заявок.</p></div>'
-    body+='<div class="card">'+p.table([*rows_dims,*[' / '.join(label(k,v) for k,v in zip(cols_dims,ck)) or 'Все' for ck in shown],'Все срезы'],rendered+[total])+'</div>'
+    body+='<div class="card">'+p.table([*[labels.field(x) for x in rows_dims],*[' / '.join(label(k,v) for k,v in zip(cols_dims,ck)) or 'Все' for ck in shown],'Все срезы'],rendered+[total])+'</div>'
     def nav(param,offset,step,total):
         return '<div class="row">'+(p.link(base+'/pivot?'+urlencode({**q,param:max(0,offset-step)}),'← Назад','button') if offset else '')+p.E(str(offset+1 if total else 0)+'–'+str(min(offset+step,total))+' из '+str(total))+(p.link(base+'/pivot?'+urlencode({**q,param:offset+step}),'Далее →','button') if offset+step<total else '')+'</div>'
     body+=nav('offset',off,100,len(rkeys))
     if len(ckeys)>12:body+='<p>Столбцы</p>'+nav('column_offset',co,12,len(ckeys))
     # The standard pivot sums per-attribute observations; exact unique-app matrix above is authoritative for app counts.
-    init={'base':base,'query':q,'csrf':user['csrf'],'layout':load(user,eid,'wdr')}
+    init={'base':base,'query':q,'csrf':user['csrf'],'layout':load(user,eid,'wdr'),'captions':{**labels.FIELDS,'CNT':'Наблюдения атрибутов'}}
     body+='<details class="card" data-wdr-panel><summary>Конструктор WebDataRocks · наблюдения атрибутов</summary><p>Здесь сумма CNT — число наблюдений атрибутов в срезах. Число уникальных заявок смотрите в таблице выше. Редактор полей позволяет менять строки, столбцы и фильтры.</p><button type="button" data-wdr-save>Сохранить макет конструктора</button><p data-wdr-message role="status"></p><div id="wdr-pivot"></div></details><script type="application/json" id="pivot-settings">'+json.dumps(init,ensure_ascii=False).replace('<','\\u003c')+'</script>'
     extra='<link rel="stylesheet" href="/assets/vendor/webdatarocks/webdatarocks.min.css"><script src="/assets/vendor/webdatarocks/webdatarocks.js"></script><script src="/assets/vendor/webdatarocks/webdatarocks.toolbar.min.js"></script><script src="/assets/pivot.js"></script>'
     return p.shell(user,'Сводный отчёт',body,'run',extra=extra)

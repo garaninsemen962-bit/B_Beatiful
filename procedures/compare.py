@@ -1,5 +1,8 @@
-"""Contract: compare(union_rows, params) -> iterable of comparison dictionaries.
-RAW is canonical JSON: null, false, 0, empty string remain distinct.
+"""Сопоставляет строки BEFORE и AFTER по заявке, пути и элементу массива и
+определяет тип изменения: значение изменилось, атрибут появился, исчез, без изменений.
+
+Контракт: compare(union_rows, params) -> строки сравнения.
+RAW хранится как канонический JSON, поэтому null, false, 0 и пустая строка различаются.
 """
 def compare(union_rows, params):
     pairs = {}

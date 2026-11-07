@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse,parse_qs,unquote,urlencode
 import store as s
-import service,sandbox,pages as p,reports,accounts,lifecycle,pivot,ai_review,ai_models,ai_views,ai_prompts,root_admin
+import labels,service,sandbox,pages as p,reports,accounts,lifecycle,pivot,ai_review,ai_models,ai_views,ai_prompts,root_admin
 from engine import Mart
 from uploads import MAX_UPLOAD
 
@@ -78,10 +78,11 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc();self.send(p.shell(self.user,'Ошибка сервера','<div class="error">Подробности записаны в журнал сервера.</div>'),500)
     def route(self,post):
         path=self.path_only;q=self.q;f=self.form;user=self.user
+        if path=='/favicon.ico' and not post:return self.send((s.ROOT/'web/favicon.svg').read_bytes(),kind='image/svg+xml')
         if path.startswith('/assets/') and not post:
             relative=Path(path[len('/assets/'):]);file=s.ROOT/'web'/relative
             if '..' in relative.parts or relative.is_absolute() or not file.is_file() or file.resolve().is_relative_to((s.ROOT/'web').resolve()) is False:raise FileNotFoundError('Файл не найден')
-            kinds={'.css':'text/css','.js':'text/javascript','.woff':'font/woff','.ttf':'font/ttf','.svg':'image/svg+xml','.txt':'text/plain; charset=utf-8','.json':'application/json; charset=utf-8'}
+            kinds={'.css':'text/css','.js':'text/javascript','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.svg':'image/svg+xml','.txt':'text/plain; charset=utf-8','.json':'application/json; charset=utf-8'}
             if file.suffix not in kinds:raise FileNotFoundError('Файл не найден')
             return self.send(file.read_bytes(),kind=kinds[file.suffix])
         if path in ('/login','/register'):
@@ -317,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.json({'saved':True}) if kind=='wdr' else self.redirect(base+'/pivot','Вид сохранён')
         if section=='/facts':
             if e['state']!='done':raise ValueError('Дождитесь завершения расчёта')
-            rows=[{**{k:v for k,v in fact.items() if k!='APP_IDS'},'CNT':len(apps)} for fact,apps in reports.selected(eid,pivot.query(q))]
+            rows=[{**{k:(labels.value(k,v) if k in ('PATH','CHANGE_TYPE','SOURCE','DIFF_FLAG') else v) for k,v in fact.items() if k!='APP_IDS'},'CNT':len(apps)} for fact,apps in reports.selected(eid,pivot.query(q))]
             if len(json.dumps(rows,ensure_ascii=False).encode())>950000:return self.json({'error':'Объём данных превышает лимит WebDataRocks 1 МБ. Сузьте фильтры; точная сводная выше доступна без этого ограничения.'},400)
             return self.json({'rows':rows})
         if section=='/recheck':
@@ -353,21 +354,35 @@ class Handler(BaseHTTPRequestHandler):
             status={}
             if e['state']=='done':status=reports.artifact(eid,'status.json')
             elif e['state'] in ('running','queued'):status=sandbox.status_file(s.STATE/'executions'/eid/'result')
-            body=head+'<div class="card" data-execution="'+eid+'" data-initial-state="'+p.E(e['state'])+'"><h2>Состояние выполнения</h2><progress max="100" value="'+str(status.get('progress',0))+'"></progress><p data-stage>'+p.E(status.get('stage',e['state']))+'</p><p class="muted">Начало: '+p.date(e['created'])+' · завершение: '+p.date(e['finished'])+'</p>'+('<pre class="error">'+p.E(e['error'])+'</pre>' if e['error'] else '')+'</div>'
+            body=head+'<div class="card" data-execution="'+eid+'" data-initial-state="'+p.E(e['state'])+'"><h2>Состояние выполнения</h2><progress max="100" value="'+str(status.get('progress',0))+'"></progress><p data-stage>'+p.E(status.get('stage',labels.state(e['state'])))+'</p><p class="muted">Начало: '+p.date(e['created'])+' · завершение: '+p.date(e['finished'])+'</p>'+('<pre class="error">'+p.E(e['error'])+'</pre>' if e['error'] else '')+'</div>'
             if e['state']=='done':
-                summary=reports.artifact(eid,'summary.json');body+='<div class="metrics">'+''.join('<div class="metric"><span class="muted">'+label+'</span><b>'+str(summary[key])+'</b></div>' for key,label in [('total_apps','Сопоставимых заявок'),('changed_apps','С различиями'),('decision_changed','Сменили решение'),('rows','Атрибутов сравнения')])+'</div>'
+                summary=reports.artifact(eid,'summary.json');total=summary['total_apps'] or 1
+                same=summary['changed_apps']-summary['decision_changed']
+                def num(n):return f'{n:,}'.replace(',','\u202f')
+                body+='<section class="verdict"><p class="verdict-main"><b>'+num(summary['decision_changed'])+'</b> из '+num(summary['total_apps'])+' '+labels.plural(summary['total_apps'],'заявки','заявок','заявок')+' сменили решение</p><p class="verdict-sub">Различия в ответе есть у '+num(summary['changed_apps'])+', из них у '+num(same)+' решение осталось прежним. Сравнено '+num(summary['rows'])+' атрибутов.</p>'
+                order=[('APPROVE → REJECT','flip-reject'),('REJECT → APPROVE','flip-approve'),('APPROVE → APPROVE','keep-approve'),('REJECT → REJECT','keep-reject')]
+                known=dict(summary['transitions']);segments=[(k,c,known.pop(k,0)) for k,c in order]+[(k,'keep-other',v) for k,v in known.items()]
+                body+='<div class="flowbar" role="img" aria-label="Распределение заявок по переходам решений">'+''.join('<span class="'+c+'" style="flex-grow:'+str(v)+'" title="'+p.E(labels.transition(k))+': '+str(v)+'"></span>' for k,c,v in segments if v)+'</div>'
+                body+='<ul class="flowlegend">'+''.join('<li class="'+c+'"><i></i>'+p.E(labels.transition(k))+' <b>'+num(v)+'</b> <span>'+labels.percent(v/total)+'</span></li>' for k,c,v in segments if v)+'</ul></section>'
                 if summary.get('input_quality_available'):
                     body+='<div class="card"><h2>Качество входных данных</h2><p>Входных заявок: '+str(summary['input_apps'])+' · сопоставлено: '+str(summary['total_apps'])+' · исключено: '+str(summary['excluded_apps'])+'.</p><p>Сводная и бизнес-проверки используют только корректные пары BEFORE/AFTER. Проверки ошибок используют все входные заявки.</p>'+p.link(base+'/applications?excluded=1','Посмотреть исключённые заявки','button')+' '+p.link(base+'/input-errors','Скачать причины в JSON','button')+'</div>'
                 else:body+='<div class="warning">Для этой витрины качество исходных ответов неизвестно. Выполните новый полный расчёт с обновлённым контейнером.</div>'
-                body+='<div class="card"><h2>Изменения решений</h2>'+p.table(['Переход','Заявок'],[[p.E(k),str(v)] for k,v in summary['transitions'].items()])+'</div>'
+                try:causes=reports.decision_causes(eid)
+                except Exception:causes=[]
+                if causes:
+                    crow=[[p.E(k),p.link(base+'/applications?'+urlencode({'ids':json.dumps(ids)}),str(len(ids))),p.E(', '.join(labels.transition(t)+': '+str(n) for t,n in sorted(tr.items())))] for k,ids,tr in causes]
+                    body+='<div class="card"><h2>Почему сменилось решение</h2><p class="muted">Каждая заявка со сменой решения отнесена к рычагам стратегии, которые изменились в её ответе. Сумма строк равна '+str(summary['decision_changed'])+'.</p>'+p.table(['Причина','Заявок','Смена решения'],crow)+'<p>Различия есть, а решение то же: <b>'+str(same)+'</b> заявок. '+p.link(base+'/checks','Подробнее в отчёте проверок')+'</p></div>'
             logs=[]
             for x in status.get('logs',[]):
                 script=x.get('script');item=next((z for z in manifest['scripts'] if z['file']==script),None)
                 code=(p.link(base+'/code?script='+item['resource'],'Снимок v'+str(item['revision'])+' · '+item['name'])+'<br>'+p.link('/scripts/'+item['resource'],'Текущий скрипт')) if item else ''
-                logs.append([p.E(x.get('stage')),p.E(x.get('seconds')),code])
+                stage=x.get('stage') or ''
+                if item and script and script in stage:stage=stage.replace(script,item['name'])
+                logs.append([p.E(stage),p.E(x.get('seconds')),code])
             body+='<div class="card"><h2>Журнал этапов</h2>'+p.table(['Этап','Секунды','Код'],logs)+'</div>'
             output=s.STATE/'executions'/eid/'console.log';text=output.read_text(encoding='utf-8',errors='replace')[:1024*1024] if output.exists() else ''
-            body+='<details class="card"><summary>Вывод Python</summary><pre>'+p.E(text)+'</pre></details><details class="card"><summary>Входы, версии и контрольные суммы</summary><pre>'+p.E(json.dumps(manifest,ensure_ascii=False,indent=2))+'</pre></details>'
+            for item in manifest['scripts']:text=text.replace(item['file'],item['name'])
+            body+='<details class="card"><summary>Вывод Python</summary><pre>'+(p.E(text) if text.strip() else '<span class="muted">Скрипты ничего не выводили.</span>')+'</pre></details><details class="card"><summary>Входы, версии и контрольные суммы</summary><pre>'+p.E(json.dumps(manifest,ensure_ascii=False,indent=2))+'</pre></details>'
             return self.send(p.shell(user,'Выполнение '+eid[:12],body,'run'))
         if e['state']!='done':return self.send(p.shell(user,'Результат ещё не готов',head+'<div class="card">Дождитесь успешного завершения выполнения.</div>','run'))
         if section=='/input-errors':
@@ -376,9 +391,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(file.read_bytes(),kind='application/json; charset=utf-8',headers={'Content-Disposition':'attachment; filename="input-errors.json"'})
         if section in ('/checks','/export'):
             checks=reports.artifact(eid,'checks.json');rows=[]
+            try:names=reports.product_names(eid)
+            except Exception:names={}
+            def argument(arg):
+                if labels.looks_like_path(arg) and labels.path(arg)!=arg:return p.E(labels.path(arg))+'<small class="muted">'+p.E(arg)+'</small>'
+                if isinstance(arg,str) and arg in names:return p.E(labels.product(arg,names))
+                return p.E(arg)
             for x in checks['rows']:
-                qs=urlencode({'ids':json.dumps(x['APP_IDS'])});rows.append([p.E(x['LABEL']),p.E(x['SOURCE'])+'<br>'+p.E(x['ARGUMENT']),str(x['CNT'])+' / '+str(x['TOTAL']),p.E(x['METRIC']),'<span class="badge '+('low ' if x['CONFIDENCE']=='LOW' else '')+('fail' if x['RESULT']=='FAIL' else 'pass')+'">'+p.E(x['RESULT'])+' · '+p.E(x['CONFIDENCE'])+'</span>',p.link(base+'/applications?'+qs,str(len(x['APP_IDS']))+' примеров')])
-            body='<div class="card"><p class="muted">FAIL — условие проверки сработало. Бледные строки — LOW confidence. Количество примеров может быть ограничено параметрами.</p>'+p.table(['Проверка','Срез / аргумент','Количество','Метрика','Результат','Примеры'],rows)+'</div>'
+                low=x['CONFIDENCE']=='LOW';n=len(x['APP_IDS'])
+                qs=urlencode({'ids':json.dumps(x['APP_IDS'])})
+                verdict='<span class="badge '+('low ' if low else '')+('fail' if x['RESULT']=='FAIL' else 'pass')+'">'+p.E(x['RESULT'])+'</span>'+('<small class="muted">мало данных</small>' if low else '')
+                rows.append([('<span class="low">' if low else '')+p.E(labels.check(x['LABEL']))+('</span>' if low else ''),'<b>'+p.E(labels.source(x['SOURCE']))+'</b><br>'+argument(x['ARGUMENT']),'<span class="nowrap">'+str(x['CNT'])+' / '+str(x['TOTAL'])+'</span>','<span class="nowrap">'+p.E(labels.percent(x['METRIC']))+'</span>',verdict,p.link(base+'/applications?'+qs,str(n)+' '+labels.plural(n,'заявка','заявки','заявок')) if n else '—'])
+            body='<div class="card"><p class="muted">FAIL — условие проверки сработало, PASS — нарушений не найдено. «Мало данных» и бледная строка — срабатываний немного, уверенности в проблеме нет. В «Примерах» — до 20 заявок, ссылка ведёт к ним.</p>'+p.table(['Проверка','Срез и аргумент','Заявок','Доля','Результат','Примеры'],rows)+'</div>'
             with s.db() as c:analysis=c.execute("SELECT a.*,u.display FROM analyses a JOIN users u ON u.id=a.actor WHERE execution=? AND a.state='done' ORDER BY a.created DESC LIMIT 1",(eid,)).fetchone()
             body+='<div class="card"><h2>Второе мнение Gemini</h2>'+(p.ai_result(dict(analysis)) if analysis else '<p>Анализ ещё не запрашивался или не завершён.</p>')+p.link(base+'/ai','Открыть анализ и историю запросов')+'</div>'
             if section=='/export':
@@ -400,21 +424,23 @@ class Handler(BaseHTTPRequestHandler):
                     body=head+'<p>'+p.link(base+'/applications?'+urlencode({k:v for k,v in q.items() if k!='all'}),'← Назад к выбранному списку')+'</p><div class="card input-quality"><h2>Заявка исключена из сравнения</h2><p>Нет корректной пары BEFORE/AFTER. Строки этой заявки не включены в сводную и бизнес-проверки.</p>'+p.table(['Срез','Статус','Причина'],[[p.E(x['SOURCE']),p.E(x['STATUS']),p.E(x['ERROR'] or 'Ответ прочитан и разобран')] for x in quality])+(p.table(['Общий этап пары','Причина'],[[p.E(x['STAGE']),p.E(x['ERROR'])] for x in pair_errors]) if pair_errors else '')+'</div>'
                     return self.send(p.shell(user,app,body,'run'))
                 allrows=q.get('all')=='1'
-                body=head+'<p>'+p.link(base+'/applications?'+urlencode({k:v for k,v in q.items() if k not in ('all',)}),'← Назад к выбранному списку')+'</p>'+p.link(self.path_only+'?'+urlencode({**q,'all':'0' if allrows else '1'}),'Показать только изменения' if allrows else 'Показать все атрибуты','button')
+                try:names=reports.product_names(eid)
+                except Exception:names={}
+                body=head+'<p>'+p.link(base+'/applications?'+urlencode({k:v for k,v in q.items() if k not in ('all',)}),'← Назад к выбранному списку')+'</p>'+'<div class="card"><h2>Заявка '+p.E(app)+'</h2><p>Решение: <b>'+p.E(labels.decision(seg.get('DECISION_BEFORE','')))+'</b> → <b>'+p.E(labels.decision(seg.get('DECISION_AFTER','')))+'</b>'+(' <span class="badge fail">решение сменилось</span>' if seg.get('DECISION_CHANGED') else ' <span class="badge">решение то же</span>')+'</p><p class="muted">Продукты: '+p.E(labels.products(seg.get('PRODUCTS',''),names) or '—')+' · изменённых атрибутов: '+str(sum(1 for x in rows if x['DIFF_FLAG']))+'</p></div>'+p.link(self.path_only+'?'+urlencode({**q,'all':'0' if allrows else '1'}),'Показать только изменения' if allrows else 'Показать все атрибуты','button')
                 focus=q.get('focus_path') or json.loads(q.get('filter','{}')).get('PATH')
                 focused=[x for x in rows if x['PATH']==focus and ('focus_array' not in q or x['ARRAY_KEY']==q['focus_array'])]
                 if focused:
                     with reports.connect(eid) as c:
                         originals=[json.loads(x[0]) for x in c.execute('SELECT data FROM normalized WHERE APP_ID=? AND PATH=?',(app,focus))]
-                    body+='<section class="focused-attribute" id="focus"><h2>Выбранный атрибут: '+p.E(focus)+'</h2>'
+                    body+='<section class="focused-attribute" id="focus"><h2>Выбранный атрибут: '+p.E(labels.path(focus))+'</h2>'+('<p class="muted">'+p.E(focus)+'</p>' if labels.path(focus)!=focus else '')
                     for x in focused:
-                        body+='<h3>Ключ массива: '+p.E(x['ARRAY_KEY'] or '—')+'</h3><p>'+p.E(pivot.TYPES.get(x['CHANGE_TYPE'],x['CHANGE_TYPE']))+'</p>'
+                        body+='<h3>Элемент массива: '+p.E(labels.array_key(x['ARRAY_KEY'],names))+'</h3><p>'+p.E(pivot.TYPES.get(x['CHANGE_TYPE'],x['CHANGE_TYPE']))+'</p>'
                         for source in ('BEFORE','AFTER'):
                             original=next((n for n in originals if n['SOURCE']==source and n['ARRAY_KEY']==x['ARRAY_KEY']),None)
                             raw=original.get('RAW') if original else None
-                            body+='<h4>'+source+'</h4><pre class="attribute-value">'+p.E(raw if original else 'Атрибут отсутствует')+'</pre>'
+                            body+='<h4>'+p.E(labels.source(source))+'</h4><pre class="attribute-value">'+p.E(raw if original else 'Атрибут отсутствует')+'</pre>'
                     body+='</section>'
-                body+='<div class="card">'+p.table(['Путь','Ключ массива','До','После','Тип'],[[p.link(self.path_only+'?'+urlencode({**q,'focus_path':x['PATH'],'focus_array':x['ARRAY_KEY']})+'#focus',x['PATH']),p.E(x['ARRAY_KEY']),'<i>отсутствует</i>' if x['CHANGE_TYPE']=='ATTRIBUTE_NEW' else p.E(json.dumps(x['VALUE_BEFORE'],ensure_ascii=False)),'<i>отсутствует</i>' if x['CHANGE_TYPE']=='ATTRIBUTE_LOST' else p.E(json.dumps(x['VALUE_AFTER'],ensure_ascii=False)),p.E(pivot.TYPES.get(x['CHANGE_TYPE'],x['CHANGE_TYPE']))] for x in rows if allrows or x['DIFF_FLAG']])+'</div><details class="card"><summary>Разрезы и сведения по продуктам</summary><pre>'+p.E(json.dumps(seg,ensure_ascii=False,indent=2))+'</pre></details>'
+                body+='<div class="card">'+p.table(['Атрибут','Элемент массива','До','После','Тип'],[[p.link(self.path_only+'?'+urlencode({**q,'focus_path':x['PATH'],'focus_array':x['ARRAY_KEY']})+'#focus',labels.path(x['PATH']))+('<br><small class="muted">'+p.E(x['PATH'])+'</small>' if labels.path(x['PATH'])!=x['PATH'] else ''),p.E(labels.array_key(x['ARRAY_KEY'],names)),'<i>отсутствует</i>' if x['CHANGE_TYPE']=='ATTRIBUTE_NEW' else p.E(json.dumps(x['VALUE_BEFORE'],ensure_ascii=False)),'<i>отсутствует</i>' if x['CHANGE_TYPE']=='ATTRIBUTE_LOST' else p.E(json.dumps(x['VALUE_AFTER'],ensure_ascii=False)),p.E(pivot.TYPES.get(x['CHANGE_TYPE'],x['CHANGE_TYPE']))] for x in rows if allrows or x['DIFF_FLAG']])+'</div><details class="card"><summary>Разрезы и сведения по продуктам</summary><pre>'+p.E(json.dumps(seg,ensure_ascii=False,indent=2))+'</pre></details>'
 
                 return self.send(p.shell(user,app,body,'run'))
             ids=set(json.loads(q['ids'])) if 'ids' in q else (set() if q.get('excluded')=='1' else set().union(*(apps for _,apps in reports.selected(eid,q))))
@@ -426,8 +452,13 @@ class Handler(BaseHTTPRequestHandler):
                 apps.extend(dict(APP_ID=appid,DECISION_BEFORE='Не сравнивалась',DECISION_AFTER='Исключена',PRODUCTS='') for appid in sorted(excluded-present))
                 apps.sort(key=lambda x:x['APP_ID'])
             offset=max(0,int(q.get('offset',0)));rows=[]
-            for x in apps[offset:offset+100]:rows.append([p.link(base+'/applications/'+x['APP_ID']+'?'+urlencode(q)+('#focus' if q.get('focus_path') else ''),x['APP_ID']),p.E(x['DECISION_BEFORE']),p.E(x['DECISION_AFTER']),p.E(x['PRODUCTS'])])
-            body=head+'<p>'+str(len(apps))+' заявок. '+p.link(base+'/pivot?'+urlencode(pivot.query(json.loads(q['return'])) if 'return' in q else {k:v for k,v in q.items() if k not in ('filter','ids','offset','focus_path','focus_array')}),'Вернуться к сводной')+'</p><div class="card">'+p.table(['Заявка','До','После','Продукты'],rows)+'</div>'+self.pagination(base+'/applications',q,offset,len(apps))
+            try:names=reports.product_names(eid)
+            except Exception:names={}
+            for x in apps[offset:offset+100]:
+                changed=bool(x.get('DECISION_CHANGED'))
+                after=p.E(labels.decision(x['DECISION_AFTER']))
+                rows.append([p.link(base+'/applications/'+x['APP_ID']+'?'+urlencode(q)+('#focus' if q.get('focus_path') else ''),x['APP_ID']),p.E(labels.decision(x['DECISION_BEFORE'])),('<b class="changed">'+after+' ●</b>' if changed else after),p.E(labels.products(x['PRODUCTS'],names))])
+            body=head+'<p>'+str(len(apps))+' '+labels.plural(len(apps),'заявка','заявки','заявок')+'. <span class="muted">● — решение сменилось.</span> '+p.link(base+'/pivot?'+urlencode(pivot.query(json.loads(q['return'])) if 'return' in q else {k:v for k,v in q.items() if k not in ('filter','ids','offset','focus_path','focus_array')}),'Вернуться к сводной')+'</p><div class="card">'+p.table(['Заявка','Решение BEFORE (прод)','Решение AFTER (бета)','Продукты'],rows)+'</div>'+self.pagination(base+'/applications',q,offset,len(apps))
             return self.send(p.shell(user,'Заявки',body,'run'))
         raise FileNotFoundError('Страница не найдена')
     def pagination(self,url,q,offset,total):
@@ -450,7 +481,7 @@ class Handler(BaseHTTPRequestHandler):
         return p.shell(self.user,'Анализ Gemini',body,'run',extra='<script defer src="/assets/prompts.js"></script><script defer src="/assets/ai.js"></script>')
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8765);parser.add_argument('--host',default='127.0.0.1');recovery=parser.add_mutually_exclusive_group();recovery.add_argument('--create-admin',metavar='LOGIN');recovery.add_argument('--create-root',action='store_true');parser.add_argument('--enable-root-console',action='store_true');recovery.add_argument('--reset-password',metavar='LOGIN');parser.add_argument('--import-demo',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8765);parser.add_argument('--host',default='127.0.0.1');recovery=parser.add_mutually_exclusive_group();recovery.add_argument('--create-admin',metavar='LOGIN');recovery.add_argument('--create-root',action='store_true');parser.add_argument('--enable-root-console',action='store_true');recovery.add_argument('--reset-password',metavar='LOGIN');parser.add_argument('--import-demo',action='store_true');parser.add_argument('--local-runner',action='store_true',help='Демо-режим без Docker: процедуры выполняются на этом компьютере без изоляции. Только для одного доверенного пользователя.');args=parser.parse_args()
     if args.reset_password:
         if args.import_demo:raise SystemExit('--import-demo не используется при сбросе пароля')
         if not (s.STATE/'app.sqlite').exists():raise SystemExit('База пользователей не найдена. Проверьте папку установки и DD_STATE.')
@@ -478,5 +509,9 @@ def main():
         if args.import_demo:service.import_demo(user)
         print('Администратор создан. Теперь запустите python app.py');return
     if args.import_demo:raise SystemExit('--import-demo используется вместе с --create-admin')
+    if args.local_runner or sandbox.LOCAL:
+        sandbox.enable_local()
+        if args.host not in ('127.0.0.1','localhost','::1'):raise SystemExit('--local-runner разрешён только с --host 127.0.0.1: код процедур выполняется без изоляции')
+        print('ВНИМАНИЕ: локальный режим без Docker. Python-процедуры выполняются на этом компьютере без изоляции.',flush=True)
     sandbox.recover();ai_review.recover();server=ThreadingHTTPServer((args.host,args.port),Handler);server.root_console_enabled=args.enable_root_console;print(f'Откройте http://{args.host}:{args.port}',flush=True);server.serve_forever()
 if __name__=='__main__':main()

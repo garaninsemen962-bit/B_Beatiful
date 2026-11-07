@@ -1,6 +1,9 @@
-"""Contract: normalize(document, app_id, source, params) -> list[dict].
-segments(before, after, app_id, params) -> dict. Array paths omit [].
-Edit this procedure, not the application, to support another response format.
+"""Приводит ответ СПР к плоской таблице: одна строка на атрибут.
+
+Контракт: normalize(document, app_id, source, params) -> list[dict] и
+segments(before, after, app_id, params) -> dict (сведения о заявке для отчёта).
+Пути массивов записываются без []. Чтобы поддержать другой формат ответа,
+меняйте эту процедуру, а не приложение.
 """
 import json
 

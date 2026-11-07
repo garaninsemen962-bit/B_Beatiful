@@ -117,18 +117,26 @@ def execute(user,rid):
 def import_demo(user):
     existing=s.visible(user)
     if any(x['name']=='Демонстрационный прогон' for x in existing):return
-    demo=s.ROOT/'data/RUN-20260827-0001';folder=s.STATE/'objects'/s.uid();shutil.copytree(demo,folder)
+    demo=s.ROOT/'data/RUN-20260827-0001';archive=s.ROOT/'data/RUN-20260827-0001.zip'
+    if not demo.is_dir() and archive.is_file():
+        import zipfile
+        with zipfile.ZipFile(archive) as z:
+            for name in z.namelist():
+                if name.startswith('/') or '..' in Path(name).parts:raise ValueError('Недопустимый путь в архиве датасета')
+            z.extractall(s.ROOT/'data')
+    if not demo.is_dir():raise FileNotFoundError('Не найден датасет data/RUN-20260827-0001 (или архив data/RUN-20260827-0001.zip)')
+    folder=s.STATE/'objects'/s.uid();shutil.copytree(demo,folder)
     with s.db() as c:
         data=s.create(c,user,'dataset','Открытый датасет · 2002 заявки','Данные участников хакатона',{'folder':folder.name,'apps':2002,'files':4004,'sha256':'bundled-open-dataset'},'public')
         ids={}
-        labels={'normalize':'Нормализация ответов СПР','compare':'Сравнение атрибутов','aggregate':'Агрегация фактов counts','check_ar_drop_by_product':'Падение доли одобрений','check_attribute_new_loss':'Изменение состава атрибутов','check_external_score_drift':'Изменение внешнего скора','check_stop_factor_disappeared':'Исчезновение стоп-фактора','check_target_model_changed':'Смена целевой модели'}
+        labels={'normalize':'Нормализация ответов СПР','compare':'Сравнение атрибутов','aggregate':'Агрегация фактов (число заявок по группам)','check_ar_drop_by_product':'Падение доли одобрений','check_attribute_new_loss':'Изменение состава атрибутов','check_external_score_drift':'Изменение внешнего скора','check_stop_factor_disappeared':'Исчезновение стоп-фактора','check_target_model_changed':'Смена целевой модели','check_cutoff_shifted':'Сдвиг порога','check_stop_factor_new':'Новый стоп-фактор','check_diff_same_decision':'Различия без смены решения'}
         for p in [*(s.ROOT/'procedures').glob('*.py'),*(s.ROOT/'checks').glob('*.py')]:
             if p.name=='check_parse_errors.py':continue # Технический отчёт качества уже добавляется движком автоматически.
             code=p.read_text(encoding='utf-8');kind={'normalize':'normalizer','compare':'comparator','aggregate':'aggregator'}.get(p.stem,'check');_,desc=s.script_info(code,kind)
             file=s.uid()+'.py';(s.STATE/'objects'/file).write_text(code,encoding='utf-8')
             ids[p.stem]=s.create(c,user,'script',labels.get(p.stem,p.stem),desc,{'script_kind':kind,'file':file,'filename':p.name,'sha256':hashlib.sha256(code.encode()).hexdigest()},'public')
         cfg={'dataset':data,'normalizer':ids['normalize'],'comparator':ids['compare'],'aggregator':ids['aggregate'],'checks':[v for k,v in ids.items() if k.startswith('check_')], 'normalize_params':{},'compare_params':{},'aggregate_params':{},'check_params':{}}
-        cid=s.create(c,user,'config','Демонстрационная конфигурация','Выданный датасет и пять исходных проверок',cfg,'public')
+        cid=s.create(c,user,'config','Демонстрационная конфигурация','Выданный датасет, пять исходных проверок и три дополнительные: порог, новый стоп-фактор, различия без смены решения',cfg,'public')
         s.create(c,user,'run','Демонстрационный прогон','Первый полный расчёт',{'config':cfg,'source_config':cid,'source_revision':1},'public')
 
 def recheck(user,parent_id,fields):

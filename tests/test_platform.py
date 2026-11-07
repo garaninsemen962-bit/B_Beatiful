@@ -79,7 +79,7 @@ class PlatformTests(unittest.TestCase):
    eid=service.execute(self.owner,r['id'])
   with s.db() as c:
    e=dict(c.execute('SELECT * FROM executions WHERE id=?',(eid,)).fetchone());manifest=json.loads(e['manifest'])
-   self.assertEqual(len(manifest['scripts']),8);self.assertEqual(manifest['dataset']['revision'],1)
+   self.assertEqual(len(manifest['scripts']),11);self.assertEqual(manifest['dataset']['revision'],1)
    cfg=json.loads(r['body'])['config'];cfg['normalize_params']={'exclude':[]}
    s.revise(c,self.owner,r,1,'Изменённый прогон','',{'config':cfg})
    old=json.loads(c.execute('SELECT manifest FROM executions WHERE id=?',(eid,)).fetchone()[0]);self.assertEqual(old['run_revision'],1);self.assertEqual(old['config']['normalize_params'],{})

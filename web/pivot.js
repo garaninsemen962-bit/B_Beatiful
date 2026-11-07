@@ -14,7 +14,8 @@
   if(!panel.open||pivot||loading)return;loading=true;message.textContent='Загрузка агрегатов…';
   try{
    const response=await fetch(settings.base+'/facts?'+new URLSearchParams(settings.query));const data=await response.json();if(!response.ok)throw Error(data.error||'Не удалось загрузить факты');
-   const report={...settings.layout,dataSource:{data:data.rows},slice:settings.layout.slice||{rows:[{uniqueName:'PATH'}],columns:[{uniqueName:'SOURCE'}],measures:[{uniqueName:'CNT',aggregation:'sum',caption:'Наблюдения атрибутов'}]},options:{...(settings.layout.options||{}),configuratorActive:false,drillThrough:false}};
+   const caps=settings.captions||{};const meta=Object.fromEntries(Object.keys(caps).map(k=>[k,{type:k==='CNT'?'number':'string',caption:caps[k]}]));const report={...settings.layout,dataSource:{data:[meta,...data.rows]},slice:settings.layout.slice||{rows:[{uniqueName:'PATH'}],columns:[{uniqueName:'SOURCE'}],measures:[{uniqueName:'CNT',aggregation:'sum',caption:'Наблюдения атрибутов'}]},options:{...(settings.layout.options||{}),configuratorActive:false,drillThrough:false}};
+   for(const area of ['rows','columns','reportFilters']){for(const item of (report.slice[area]||[])){if(!item.caption&&caps[item.uniqueName])item.caption=caps[item.uniqueName]}}
    pivot=new WebDataRocks({container:'#wdr-pivot',height:650,toolbar:true,global:{localization:'/assets/vendor/webdatarocks/ru.json'},report,beforetoolbarcreated:toolbar=>{const get=toolbar.getTabs;toolbar.getTabs=function(){return get.call(this).filter(x=>!['wdr-tab-connect','wdr-tab-open','wdr-tab-save'].includes(x.id))}},reportcomplete:()=>{message.textContent='Конструктор готов. Изменения можно сохранить отдельной кнопкой.'}});
   }catch(e){message.textContent=e.message}finally{loading=false}
  });

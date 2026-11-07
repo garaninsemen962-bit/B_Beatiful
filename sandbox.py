@@ -1,5 +1,7 @@
-"""Fail-closed Docker runner. User Python is NEVER executed on the web host."""
-import json,os,shutil,subprocess,threading,time
+"""Fail-closed Docker runner. User Python is NEVER executed on the web host,
+unless the operator explicitly starts the server with --local-runner (DD_LOCAL_RUNNER=1):
+a demo mode for a single trusted machine without Docker."""
+import json,os,shutil,subprocess,sys,threading,time
 from pathlib import Path
 from store import ROOT,STATE,db,audit
 IMAGE=os.environ.get('DD_RUNNER_IMAGE','decision-diff-runner:2')
@@ -8,8 +10,17 @@ MAX_WORKERS=2
 TIMEOUT=int(os.environ.get('DD_TIMEOUT','600'))
 LIMIT_BYTES=900*1024*1024
 lock=threading.Lock()
+LOCAL=os.environ.get('DD_LOCAL_RUNNER')=='1'
+LOCAL_IMAGE='local-python-unsandboxed'
+
+def enable_local():
+    """Demo mode: run engine.py as a host subprocess. No container isolation."""
+    global LOCAL,RESOLVED_IMAGE
+    LOCAL=True;RESOLVED_IMAGE=LOCAL_IMAGE
 def available():
     global RESOLVED_IMAGE
+    if LOCAL:
+        RESOLVED_IMAGE=LOCAL_IMAGE;return True,'Локальный режим без Docker: код процедур выполняется на этом компьютере'
     if not shutil.which('docker'):return False,'Docker не установлен. Установите Docker и соберите образ runner.'
     try:
         r=subprocess.run(['docker','image','inspect','--format','{{.Id}}',IMAGE],capture_output=True,timeout=8)
@@ -60,7 +71,18 @@ def launch(eid,dataset=None):
     (result/'scripts').mkdir(exist_ok=True);(result/'config.json').touch()
     with db() as c:manifest=json.loads(c.execute('SELECT manifest FROM executions WHERE id=?',(eid,)).fetchone()[0])
     checks_only=manifest.get('mode')=='checks'
-    cmd=command(eid,folder,dataset,manifest['image'],folder/'input/mart.sqlite' if checks_only else None)
+    if manifest.get('image')==LOCAL_IMAGE:
+        if not LOCAL:raise ValueError('Выполнение подготовлено для локального режима, а сервер запущен без --local-runner')
+        # Same layout as inside the container, but with real host paths in config.json.
+        shutil.rmtree(result/'scripts');shutil.copytree(folder/'input/scripts',result/'scripts')
+        cfg=json.loads((folder/'input/config.json').read_text(encoding='utf-8'))
+        if checks_only:cfg['source_mart']=str((folder/'input/mart.sqlite').resolve())
+        else:cfg['dataset']=str(Path(dataset).resolve())
+        (result/'config.json').write_text(json.dumps(cfg,ensure_ascii=False),encoding='utf-8')
+        cmd=[sys.executable,'-I','-X','utf8','-u',str(ROOT/'engine.py'),str(result.resolve())]
+    else:
+        if LOCAL:raise ValueError('Сервер запущен в локальном режиме; Docker-выполнение недоступно')
+        cmd=command(eid,folder,dataset,manifest['image'],folder/'input/mart.sqlite' if checks_only else None)
     def work():
         error='';state='failed';p=None
         try:
@@ -106,8 +128,9 @@ def launch(eid,dataset=None):
                 state='done'
         except Exception as ex:error=str(ex)
         finally:
-            try:subprocess.run(['docker','rm','-f','dd-'+eid],capture_output=True,timeout=15)
-            except (OSError,subprocess.TimeoutExpired):pass
+            if not LOCAL:
+                try:subprocess.run(['docker','rm','-f','dd-'+eid],capture_output=True,timeout=15)
+                except (OSError,subprocess.TimeoutExpired):pass
             if p:
                 try:p.wait(timeout=5)
                 except subprocess.TimeoutExpired:p.kill();p.wait()
@@ -121,6 +144,7 @@ def recover():
     # A stopped coordinator does not silently accept orphaned execution output.
     with db() as c:ids=[r[0] for r in c.execute("SELECT id FROM executions WHERE state IN ('queued','running')")]
     for eid in ids:
-        try:subprocess.run(['docker','rm','-f','dd-'+eid],capture_output=True,timeout=10)
-        except (OSError,subprocess.TimeoutExpired):pass
+        if not LOCAL:
+            try:subprocess.run(['docker','rm','-f','dd-'+eid],capture_output=True,timeout=10)
+            except (OSError,subprocess.TimeoutExpired):pass
         finish(eid,'failed','Сервер был перезапущен. Создайте новое выполнение.')

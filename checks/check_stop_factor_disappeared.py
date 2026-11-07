@@ -35,7 +35,7 @@ def run(mart, params=None):
             rows.append({
                 "LABEL": CHECK["label"],
                 "SOURCE": "AFTER",
-                "ARGUMENT": rule,
+                "ARGUMENT": f"{rule} ({title})",
                 "CNT": len(apps),
                 "TOTAL": total,
                 "METRIC": round(len(apps) / total, 4) if total else 0.0,

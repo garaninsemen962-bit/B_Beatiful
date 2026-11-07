@@ -41,6 +41,6 @@ def run(mart, params=None):
 
 
 CHECK = {"id": "ar_drop_by_product",
-         "label": "Approval Rate по продукту упал",
+         "label": "Доля одобрений по продукту упала",
          "params": DEFAULTS,
          "entrypoint": run}

@@ -45,7 +45,7 @@ CHECK={"entrypoint":run,"params":{}}
   links=[unescape(x) for x in re.findall('href="([^"]+)"',body) if '/applications?' in x]
   def filters(x):return json.loads(urllib.parse.parse_qs(urllib.parse.urlparse(x).query)['filter'][0])
   link=next(x for x in links if filters(x).get('PATH')=='a' and filters(x).get('SOURCE')=='AFTER')
-  status,body,_=self.request(self.a,link);self.assertEqual(status,200,body);self.assertIn('2 заявок',body)
+  status,body,_=self.request(self.a,link);self.assertEqual(status,200,body);self.assertIn('2 заявки',body)
   card=next(unescape(x) for x in re.findall('href="([^"]+)"',body) if '/applications/A1?' in x)
   status,body,_=self.request(self.a,card);self.assertEqual(status,200,body);self.assertIn('id="focus"',body);self.assertIn('>null</pre>',body);self.assertIn('>false</pre>',body);self.assertIn('SOURCE',card)
   csrf=self.csrf(self.a);layout={'group':'CHANGE_TYPE','columns':'SOURCE','diff':'all'}

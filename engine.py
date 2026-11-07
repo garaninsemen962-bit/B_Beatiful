@@ -1,6 +1,11 @@
 """SQLite-backed MartAPI and background worker. Python 3.10+, standard library only."""
 import argparse, importlib.util, json, os, sqlite3, time, traceback, sys
 from pathlib import Path
+# Console output is always UTF-8: on Windows a piped stdout defaults to cp1251,
+# and the server reads console.log as UTF-8 (Cyrillic turned into '?').
+for _stream in (sys.stdout, sys.stderr):
+    try: _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError): pass
 ROOT = Path(__file__).resolve().parent
 COLUMNS = ['APP_ID','PREFIX','CLASS','SUFFIX','ARRAY_KEY','KEY','PATH','VALUE_BEFORE','VALUE_AFTER','ADJUSTED_BEFORE','ADJUSTED_AFTER','DIFF_FLAG','CHANGE_TYPE']
 FILTERS = dict(path='PATH', key='KEY', array_key='ARRAY_KEY', diff_flag='DIFF_FLAG', change_type='CHANGE_TYPE', value_before='VALUE_BEFORE', value_after='VALUE_AFTER', app_ids='APP_ID')
@@ -10,7 +15,14 @@ def load(path):
     mod = importlib.util.module_from_spec(spec); sys.modules[spec.name] = mod; spec.loader.exec_module(mod); return mod
 
 def dump(path, value):
-    temp = path.with_suffix('.tmp'); temp.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8'); temp.replace(path)
+    temp = path.with_suffix('.tmp'); temp.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+    # On Windows the target may be briefly locked: the server polls status.json,
+    # and OneDrive or an antivirus can hold any file open. Retry instead of failing.
+    for attempt in range(40):
+        try: temp.replace(path); return
+        except PermissionError:
+            if attempt == 39: raise
+            time.sleep(0.05 * (attempt + 1) if attempt < 10 else 0.5)
 
 def strict_document(raw):
     def constant(value):raise ValueError('Нестандартное число JSON: '+value)
@@ -100,9 +112,11 @@ def checks(db, folder, config, log):
                 if row['RESULT'] not in ('PASS','FAIL') or row['SOURCE'] not in ('BEFORE','AFTER'): raise ValueError('Invalid check result')
                 row['CHECK_FILE']=name
                 results.append(row)
-            log('Проверка: '+name, round(time.monotonic()-started,3),script=name)
         except Exception:
             errors.append({'file':name,'error':traceback.format_exc()}); log('Ошибка проверки: '+name,0,script=name)
+            continue
+        # Logging is outside try: a failure to write progress is not a failure of the check.
+        log('Проверка: '+name, round(time.monotonic()-started,3),script=name)
     dump(folder/'checks.json', {'rows':results, 'errors':errors})
     if errors: raise RuntimeError('Некоторые проверки завершились с ошибкой. См. checks.json и журнал.')
 
@@ -113,7 +127,11 @@ def process(folder, checks_only=False):
         status['stage']=stage
         if progress is not None: status['progress']=progress
         status['logs'].append(dict(stage=stage,seconds=seconds,time=time.time(),script=script))
-        dump(folder/'status.json',status)
+        print(time.strftime('%H:%M:%S')+'  '+stage+('' if seconds is None else f' — {seconds} с'),flush=True)
+        try: dump(folder/'status.json',status)
+        except OSError as ex:
+            # Progress display is not worth failing the calculation; the final status is written again at the end.
+            print('Не удалось обновить прогресс: '+str(ex),flush=True)
     try:
         checks_only = checks_only or config.get('mode') == 'checks'
         db=sqlite3.connect(Path(config.get('source_mart',folder/'mart.sqlite')).as_uri()+'?mode=ro&immutable=1',uri=True) if checks_only else sqlite3.connect(folder/'mart.sqlite')
@@ -137,7 +155,9 @@ def process(folder, checks_only=False):
             for i,name in enumerate(names):
                 app=Path(name).stem
                 if i%100==0:
-                    db.commit();status['progress']=int(75*(i+1)/len(names));status['stage']=f'Проверено {i+1} / {len(names)}';dump(folder/'status.json',status)
+                    db.commit();status['progress']=int(75*(i+1)/len(names));status['stage']=f'Проверено {i+1} / {len(names)}'
+                    try:dump(folder/'status.json',status)
+                    except OSError:pass
                 docs={};valid=True
                 # Проверяем оба среза независимо: повреждение первого не скрывает ошибку второго.
                 for source,file in [('BEFORE',b/name),('AFTER',a/name)]:
@@ -170,7 +190,7 @@ def process(folder, checks_only=False):
             log('Нормализация: обработка и запись строк',round(normalize_seconds,3),script=config['normalizer'])
             log('Сравнение: обработка и запись строк',round(compare_seconds,3),script=config['comparator'])
             db.executescript('CREATE INDEX cmp_path_diff ON comparison(PATH,DIFF_FLAG); CREATE INDEX cmp_type ON comparison(CHANGE_TYPE); CREATE INDEX cmp_key ON comparison(KEY); CREATE INDEX cmp_diff ON comparison(DIFF_FLAG,APP_ID);')
-            log('Агрегация фактов counts',progress=80,script=config['aggregator']); started=time.monotonic()
+            log('Агрегация фактов (число заявок по группам)',progress=80,script=config['aggregator']); started=time.monotonic()
             mart=Mart(db)
             db.executemany('INSERT INTO facts VALUES (?)',((json.dumps(f,ensure_ascii=False),) for f in agg.aggregate(mart.rows(),list(mart.segments()),config.get('aggregate_params',{}))))
             db.commit();log('Агрегаты готовы',round(time.monotonic()-started,3),90,config['aggregator'])
@@ -194,7 +214,7 @@ def process(folder, checks_only=False):
         status.update(state='done',progress=100,elapsed=round(time.time()-status['started'],3));log('Готово')
         db.close()
     except Exception:
-        status.update(state='failed',error=traceback.format_exc());log('Ошибка выполнения')
+        status.update(state='failed',error=traceback.format_exc());print(status['error'],flush=True);log('Ошибка выполнения')
         raise
 
 if __name__=='__main__':

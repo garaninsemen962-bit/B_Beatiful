@@ -75,10 +75,10 @@ class InputQualityHttpTests(unittest.TestCase):
   eid,rid,_,_=self.fixture({'BEFORE':{'ok':{'gone':1},'bad':b'{','absent':{'x':1}},'AFTER':{'ok':{'new':2},'bad':{'x':1}}})
   base='/executions/'+eid
   status,body,_=self.request(self.a,base);self.assertEqual(status,200);self.assertIn('Входных заявок: 3',body);self.assertIn('исключено: 2',body)
-  status,body,_=self.request(self.a,base+'/applications?excluded=1');self.assertEqual(status,200);self.assertIn('2 заявок',body);self.assertIn('/applications/bad?',body)
+  status,body,_=self.request(self.a,base+'/applications?excluded=1');self.assertEqual(status,200);self.assertIn('2 заявки',body);self.assertIn('/applications/bad?',body)
   for app,reason in [('bad','INVALID_JSON'),('absent','MISSING')]:
    status,body,_=self.request(self.a,base+'/applications/'+app+'?excluded=1');self.assertEqual(status,200);self.assertIn('Заявка исключена',body);self.assertIn(reason,body)
-  status,body,_=self.request(self.a,base+'/applications?'+urlencode({'ids':'["bad"]'}));self.assertEqual(status,200);self.assertIn('1 заявок',body)
+  status,body,_=self.request(self.a,base+'/applications?'+urlencode({'ids':'["bad"]'}));self.assertEqual(status,200);self.assertIn('1 заявка',body)
   self.assertEqual(self.request(self.a,base+'/applications/unknown')[0],404)
   status,body,_=self.request(self.a,base+'/input-errors');self.assertEqual(status,200);self.assertEqual(json.loads(body)['input_apps'],3)
   self.approve();self.assertEqual(self.request(self.b,base+'/input-errors')[0],403)

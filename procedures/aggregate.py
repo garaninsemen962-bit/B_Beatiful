@@ -1,5 +1,8 @@
-"""Contract: aggregate(rows, segments, params) -> iterable of facts.
-CNT is distinct applications WITHIN a group; don't sum distinct counts across attributes.
+"""Группирует сравнение по измерениям отчёта и считает факты counts —
+число уникальных заявок в каждой группе, вместе со списком их идентификаторов.
+
+Контракт: aggregate(rows, segments, params) -> факты.
+CNT — уникальные заявки внутри группы; складывать CNT разных атрибутов нельзя.
 """
 def aggregate(rows, segments, params):
     groups = {}

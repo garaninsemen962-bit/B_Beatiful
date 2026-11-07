@@ -1,4 +1,5 @@
 """Server-rendered, independent HTML pages. Ordinary links preserve browser history."""
+import labels
 import html,json,secrets
 from datetime import datetime,timezone,timedelta
 from urllib.parse import urlencode
@@ -28,8 +29,8 @@ def shell(user,title,body,section='',flash='',extra=''):
         nav+=link('/profile','Мой профиль','active' if section=='profile' else '')+link('/trash','Корзина','active' if section=='trash' else '')
         if user['admin']:nav+=link('/admin','Администрирование','active' if section=='admin' else '')
         if s.is_root(user):nav+=link('/root','Сервер root','active' if section=='root' else '')
-    identity=link('/profile',user['display'])+' · '+E(user['login'])+' '+form(user,'/logout',button('Выйти')) if user else link('/login','Войти')
-    return '<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+E(title)+' · Decision Diff</title><link rel="stylesheet" href="/assets/style.css"><script defer src="/assets/editor.js"></script><script defer src="/assets/app.js"></script><header><div><strong>Decision Diff</strong><small>Совместный анализ изменений</small></div><div class="row">'+identity+'</div></header><div class="layout"><aside>'+nav+'</aside><main>'+('<div class="notice">'+E(flash)+'</div>' if flash else '')+'<h1>'+E(title)+'</h1>'+body+'<footer>Decision Diff 2 · серверное время отображается по Москве</footer></main></div>'+extra+'</html>'
+    identity=link('/profile',user['display'],'who')+'<span class="login">'+E(user['login'])+'</span>'+form(user,'/logout',button('Выйти')) if user else link('/login','Войти')
+    return '<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+E(title)+' · Decision Diff</title><link rel="icon" href="/assets/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/assets/style.css"><script defer src="/assets/editor.js"></script><script defer src="/assets/app.js"></script><header><a class="brand" href="/runs"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="6" width="11" height="20" rx="3"/><rect x="18" y="6" width="11" height="20" rx="3"/></svg><span><strong>Decision Diff</strong><small>Сравнение версий стратегии</small></span></a><div class="identity">'+identity+'</div></header><div class="layout"><aside>'+nav+'</aside><main>'+('<div class="notice">'+E(flash)+'</div>' if flash else '')+'<h1>'+E(title)+'</h1>'+body+'<footer>Decision Diff 2. Время на страницах — московское.</footer></main></div>'+extra+'</html>'
 def auth(mode,flash=''):
     register=mode=='register'
     body='<div class="card auth"><p>После регистрации администратор должен подтвердить вашу учётную запись.</p>' if register else '<div class="card auth"><p>Войдите в рабочую область команды.</p>'
@@ -37,14 +38,14 @@ def auth(mode,flash=''):
     if register:fields+='<label>Отображаемое имя</label>'+input_('display',required=True)
     fields+='<label>Пароль</label>'+input_('password',type='password',required=True)+'<p class="muted">Минимум 8 символов.</p>'+button('Зарегистрироваться' if register else 'Войти')
     return shell(None,'Регистрация' if register else 'Вход',body+form(None,'/'+mode,fields)+ '<p>'+link('/login' if register else '/register','Уже есть аккаунт' if register else 'Создать аккаунт')+'</p></div>',flash=flash)
-def pending(user):return shell(user,'Состояние учётной записи','<div class="card"><p>Статус: <strong>'+E(user['status'])+'</strong></p><p>Если заявка ещё ожидает подтверждения, доступ появится после одобрения администратором.</p>'+link('/account','Обновить состояние','button')+'</div>')
+def pending(user):return shell(user,'Состояние учётной записи','<div class="card"><p>Статус: <strong>'+E(labels.user_status(user['status']))+'</strong></p><p>Если заявка ещё ожидает подтверждения, доступ появится после одобрения администратором.</p>'+link('/account','Обновить состояние','button')+'</div>')
 def listing(user,kind,rows,flash=''):
     body='<div class="row between"><p class="muted">Доступные вам ресурсы, включая общие и предоставленные поимённо.</p>'+link('/'+URLS[kind]+'/new','Создать' if kind in ('run','config') else 'Загрузить','button primary')+'</div>'
     result=[]
     with s.db() as c:
         for r in rows:
             owner=c.execute('SELECT display FROM users WHERE id=?',(r['owner'],)).fetchone()[0]
-            result.append([link('/'+URLS[kind]+'/'+r['id'],r['name'])+'<small class="muted">'+E(r['description'][:180])+'</small>',E(owner),E(r['visibility']),E(r['role']),str(r['revision']),date(r['created'])])
+            result.append([link('/'+URLS[kind]+'/'+r['id'],r['name'])+'<small class="muted">'+E(r['description'][:180])+'</small>',E(owner),E(labels.visibility(r['visibility'])),E(labels.role(r['role'])),str(r['revision']),date(r['created'])])
     body+='<div class="card">'+table(['Название / описание','Владелец','Доступ','Ваши права','Версия','Создан'],result)+'</div>'
     return shell(user,LABELS[kind],body,kind,flash)
 def resource_head(r,role,download=False):
@@ -54,7 +55,7 @@ def resource_head(r,role,download=False):
         if not deleted:actions+=link('/resources/'+r['id']+'/access','Доступ')+link('/resources/'+r['id']+'/delete','Удалить','button danger')
         elif not purged:actions+=link('/resources/'+r['id']+'/restore','Восстановить','button')+link('/resources/'+r['id']+'/purge','Удалить навсегда','button danger')
     if download and not deleted and r['kind'] in ('script','dataset'):actions+=link('/resources/'+r['id']+'/download','Скачать исходник')
-    return '<div class="crumb">'+link('/'+URLS[r['kind']],LABELS[r['kind']])+' / '+E(r['name'])+'</div><div class="row"><span class="badge">Версия '+str(r['revision'])+'</span><span class="badge">'+E(role)+'</span>'+actions+'</div><p class="description">'+E(r['description'])+'</p>'+('<p class="warning">Ресурс удалён навсегда. Сохранены только сведения об изменениях.</p>' if purged else '<p class="warning">Ресурс находится в корзине.</p>' if deleted else '')
+    return '<div class="crumb">'+link('/'+URLS[r['kind']],LABELS[r['kind']])+' / '+E(r['name'])+'</div><div class="row"><span class="badge">Версия '+str(r['revision'])+'</span><span class="badge">'+E(labels.role(role))+'</span>'+actions+'</div><p class="description">'+E(r['description'])+'</p>'+('<p class="warning">Ресурс удалён навсегда. Сохранены только сведения об изменениях.</p>' if purged else '<p class="warning">Ресурс находится в корзине.</p>' if deleted else '')
 def script_form(user,r=None,code='',version=None,editable=True,submitted=None,error=''):
     body=json.loads(r['body']) if r else {};rid=r['id'] if r else '';role='owner' if r and (r['owner']==user['id'] or user['admin']) else 'editor' if editable else 'reader'
     values={'revision':r['revision'] if r else 0,'script_kind':body.get('script_kind','check'),'name':r['name'] if r else '', 'description':r['description'] if r else '', 'draft_token':secrets.token_hex(16)}
@@ -75,7 +76,7 @@ def script_form(user,r=None,code='',version=None,editable=True,submitted=None,er
 def dataset_page(user,r=None,role='owner',download=False,flash=''):
     body=resource_head(r,role,download) if r else '<p>ZIP должен содержать RESULTS/BEFORE_MASTER/*.json и RESULTS/AFTER_BETA/*.json. Также принимаются RESULTS/BEFORE и RESULTS/AFTER. Допускается общая внешняя папка.</p>'
     if r:
-        data=json.loads(r['body']);body+='<div class="card">'+table(['Показатель','Значение'],[[E(k),E(v)] for k,v in data.items() if k not in ('folder','validation_examples')])+'</div>'
+        data=json.loads(r['body']);body+='<div class="card">'+table(['Показатель','Значение'],[[E(labels.DATASET_FIELDS.get(k,k)),E(labels.dataset_value(k,v))] for k,v in data.items() if k not in ('folder','validation_examples')])+'</div>'
     if r:
         data=json.loads(r['body'])
         if data.get('invalid_responses') or any(not n for n in data.get('slices',{}).values()):
@@ -110,7 +111,7 @@ def run_new(user,configs,current=''):
 def run_page(user,r,role,executions,flash=''):
     body=resource_head(r,role)
     if role in ('editor','owner'):body+='<div class="row">'+form(user,'/runs/'+r['id']+'/execute',button('Новое выполнение'))+link('/runs/'+r['id']+'/edit','Изменить настройки','button')+'</div>'
-    body+='<div class="card"><h2>Выполнения</h2>'+table(['Выполнение','Состояние','Кто запустил','Начало','Завершение'],[[link('/executions/'+x['id'],x['id'][:12]),'<span class="badge '+E(x['state'])+'">'+E(x['state'])+'</span>',E(x['display']),date(x['created']),date(x['finished'])] for x in executions])+'</div>'
+    body+='<div class="card"><h2>Выполнения</h2>'+table(['Выполнение','Состояние','Кто запустил','Начало','Завершение'],[[link('/executions/'+x['id'],x['id'][:12]),'<span class="badge '+E(x['state'])+'">'+E(labels.state(x['state']))+'</span>',E(x['display']),date(x['created']),date(x['finished'])] for x in executions])+'</div>'
     body+='<details class="card"><summary>Текущие настройки прогона</summary><pre>'+E(json.dumps(json.loads(r['body']),ensure_ascii=False,indent=2))+'</pre></details>'
     return shell(user,r['name'],body,'run',flash)
 def run_edit(user,r,resources):
@@ -141,8 +142,8 @@ def admin(user,users,health,events,flash=''):
         actions=link('/admin/users/'+u['id']+'/restore','Восстановить','button') if u['status']=='deleted' else link('/admin/users/'+u['id']+'/edit','Редактировать','button')+controls
         if u.get('server_root') and not s.is_root(user):actions='<span class="muted">Защищённая учётная запись root</span>'
         if u['status']!='deleted' and u['id']!=user['id'] and not u.get('server_root'):actions+=link('/admin/users/'+u['id']+'/delete','Удалить','button danger')
-        rows.append([E(u['display'])+'<small>'+E(u['login'])+'</small>',E(u['status']),E('Root сервера' if u.get('server_root') else 'Администратор' if u['admin'] else 'Участник'),actions])
-    body='<p>'+link('/admin','Действующие пользователи')+' · '+link('/admin?deleted=1','Удалённые пользователи')+'</p><div class="card"><h2>Пользователи</h2>'+table(['Имя','Статус','Роль','Действие'],rows)+'</div><div class="card"><h2>Контейнерный исполнитель</h2><p>'+E(health)+'</p><p class="muted">Без готового Docker runner запуск Python запрещён. До двух одновременных расчётов.</p></div><div class="card"><h2>Последние административные события</h2>'+table(['Дата','Автор','Действие'],[[date(x['created']),E(x['display']),E(x['action'])] for x in events])+'</div>'
+        rows.append([E(u['display'])+'<small>'+E(u['login'])+'</small>',E(labels.user_status(u['status'])),E('Root сервера' if u.get('server_root') else 'Администратор' if u['admin'] else 'Участник'),actions])
+    body='<p>'+link('/admin','Действующие пользователи')+' · '+link('/admin?deleted=1','Удалённые пользователи')+'</p><div class="card"><h2>Пользователи</h2>'+table(['Имя','Статус','Роль','Действие'],rows)+'</div><div class="card"><h2>Исполнитель расчётов</h2><p>'+E(health)+'</p><p class="muted">Python-процедуры выполняются в Docker-контейнере; без него расчёт запрещён, если сервер не запущен в локальном режиме (--local-runner). Одновременно — не больше двух расчётов.</p></div><div class="card"><h2>Последние административные события</h2>'+table(['Дата','Автор','Действие'],[[date(x['created']),E(x['display']),E(x['action'])] for x in events])+'</div>'
     return shell(user,'Администрирование',body,'admin',flash)
 def execution_head(user,r,e,section):
     base='/executions/'+e['id'];body='<div class="crumb">'+link('/runs','Прогоны')+' / '+link('/runs/'+r['id'],r['name'])+' / '+E(e['id'][:12])+'</div><div class="tabs">'
