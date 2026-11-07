@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse,parse_qs,unquote,urlencode
 import store as s
-import service,sandbox,pages as p,reports,accounts,lifecycle,pivot,ai_review
+import service,sandbox,pages as p,reports,accounts,lifecycle,pivot,ai_review,ai_models,ai_views
 from engine import Mart
 from uploads import MAX_UPLOAD
 
@@ -251,6 +251,15 @@ class Handler(BaseHTTPRequestHandler):
         if collection=='executions' and len(parts)>=2:return self.execution(parts,post)
         if path.startswith('/api/executions/'):
             eid=parts[2];e,r=self.get_execution(eid)
+            if len(parts)>=4 and parts[3]=='ai':
+                if len(parts)==5 and parts[4]=='models' and not post:
+                    with s.db() as c:s.require(c,user,s.resource(c,e['run']),'editor')
+                    return self.json({'models':ai_models.catalog(),'message':'Список получен из Google (кэш до 15 минут). Наличие в каталоге не гарантирует успешный запуск или свободную квоту.'})
+                if len(parts)!=4:raise FileNotFoundError('Страница не найдена')
+                if post:
+                    aid=ai_review.start(user,eid,f.get('model'));data=ai_views.panel(user,eid,aid)
+                    return self.json(data,202 if data['state'] in ('queued','running') else 200)
+                return self.json(ai_views.panel(user,eid,q.get('analysis')))
             folder=s.STATE/'executions'/eid
             status=sandbox.status_file(folder/'result') if e['state'] in ('running','queued') else {}
             return self.json({'state':e['state'],'progress':status.get('progress',100 if e['state']=='done' else 0),'stage':status.get('stage',e['state']),'error':e['error']})
@@ -298,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(p.shell(user,'Проверки по готовой витрине',body,'run'),422 if error else 200)
         if section=='/ai':
             if post:
-                aid=ai_review.start(user,eid);return self.redirect(base+'/ai?analysis='+aid)
+                aid=ai_review.start(user,eid,self.form.get('model'));return self.redirect(base+'/ai?analysis='+aid)
             return self.send(self.ai_page(e,r))
         if post:raise ValueError('Результат выполнения неизменяем. Создайте новое выполнение.')
         head=p.execution_head(user,r,e,section)
@@ -380,25 +389,18 @@ class Handler(BaseHTTPRequestHandler):
     def pagination(self,url,q,offset,total):
         return '<div class="row">'+(p.link(url+'?'+urlencode({**q,'offset':max(0,offset-100)}),'← Назад','button') if offset else '')+'<span>'+str(min(offset+1,total))+'–'+str(min(offset+100,total))+' из '+str(total)+'</span>'+(p.link(url+'?'+urlencode({**q,'offset':offset+100}),'Далее →','button') if offset+100<total else '')+'</div>'
     def ai_page(self,e,r):
-        eid=e['id'];base='/executions/'+eid
-        with s.db() as c:
-            ai_review.authorized(c,self.user,eid)
-            role=s.role(c,self.user,r)
-            analyses=[dict(x) for x in c.execute('SELECT a.*,u.display FROM analyses a JOIN users u ON u.id=a.actor WHERE execution=? ORDER BY created DESC',(eid,))]
+        eid=e['id'];base='/executions/'+eid;data=ai_views.panel(self.user,eid,self.q.get('analysis'))
+        with s.db() as c:role=s.role(c,self.user,s.resource(c,e['run']))
         ok,message=ai_review.configured();refs,payload=ai_review.evidence(eid)
-        body=p.execution_head(self.user,r,e,'/ai')+'<div class="card"><p>Gemini даёт второе мнение по агрегатам и результатам проверок. Внешнему API передаётся показанная ниже сводка; полные JSON, идентификаторы заявок, исходный код и пароли не передаются. Запрос использует квоту API вашего проекта.</p><p>'+p.E(message)+'</p>'
-        if ok and role in ('owner','editor'):body+=p.form(self.user,base+'/ai',p.button('Отправить сводку в Gemini'))
-        body+='<details><summary>Данные для отправки ('+str(len(json.dumps(payload,ensure_ascii=False).encode()))+' байт)</summary><pre>'+p.E(json.dumps(payload,ensure_ascii=False,indent=2))+'</pre></details></div>'
-        body+='<div class="card"><h2>История анализа</h2>'+p.table(['Дата','Автор','Модель','Состояние'],[[p.link(base+'/ai?analysis='+a['id'],p.date(a['created'])),p.E(a['display']),p.E(a['model']),p.E(a['state'])] for a in analyses])+'</div>'
-        selected=next((a for a in analyses if a['id']==self.q.get('analysis')),analyses[0] if analyses else None);extra=''
-        if selected:
-            body+='<div class="card"><h2>Ответ Gemini</h2><p>Модель: '+p.E(selected['model'])+' · '+p.date(selected['created'])+'</p>'
-            if selected['state'] in ('queued','running'):body+='<p role="status">Анализ выполняется в фоне…</p>';extra='<meta http-equiv="refresh" content="4">'
-            elif selected['state']=='failed':body+='<p class="error">'+p.E(selected['error'])+'</p>'
-            else:
-                body+=p.ai_result(selected)
-            body+='</div>'
-        return p.shell(self.user,'Анализ Gemini',body,'run',extra=extra)
+        selected=data['model'] or ai_models.default();options=ai_models.choices(selected)
+        if selected not in {x[0] for x in options}:selected=options[0][0] if options else ''
+        body=p.execution_head(self.user,r,e,'/ai')+'<div class="card" data-ai-controller data-ai-api="/api/executions/'+eid+'/ai"><h2>Подробный разбор результатов</h2><p>Анализ включает масштабы изменений, интерпретацию, альтернативные объяснения и порядок проверки гипотез. Выводы опираются на сводку и результаты проверок.</p><p>'+p.E(message)+'</p>'
+        if ok and role in ('owner','editor'):
+            fields='<label for="gemini-model">Модель Gemini</label>'+p.select('model',options,selected).replace('<select ','<select id="gemini-model" ')
+            fields+='<p class="muted">Модель выбирается для этого запроса. Типовой список можно дополнить каталогом Google. Разные модели могут иметь разные цены, ограничения и доступность.</p><button type="button" data-ai-models>Загрузить список из Google</button><p data-ai-model-message role="status"></p><p>Будет отправлена показанная ниже сводка; запрос использует квоту API вашего проекта.</p>'+p.button('Отправить сводку в Gemini')
+            body+=p.form(self.user,base+'/ai',fields).replace('<form ','<form data-ai-start ')
+        body+='<p>Полные ответы СПР, идентификаторы заявок, исходный код и пароли не передаются. Сводка содержит до 80 строк проверок, 30 групп изменённых путей, продуктовые группы и пересечения со сменой решения. Названия и аргументы проверок входят в отправку.</p><details data-ai-preview><summary>Данные для отправки ('+str(len(json.dumps(payload,ensure_ascii=False).encode()))+' байт)</summary><pre>'+p.E(json.dumps(payload,ensure_ascii=False,indent=2))+'</pre></details><p class="error" data-ai-network role="status" hidden></p></div>'+ai_views.container(data)
+        return p.shell(self.user,'Анализ Gemini',body,'run',extra='<script defer src="/assets/ai.js"></script>')
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8765);parser.add_argument('--host',default='127.0.0.1');recovery=parser.add_mutually_exclusive_group();recovery.add_argument('--create-admin',metavar='LOGIN');recovery.add_argument('--reset-password',metavar='LOGIN');parser.add_argument('--import-demo',action='store_true');args=parser.parse_args()

@@ -5,7 +5,7 @@
     "execution": "host; trusted bundled code only; NOT a Docker timing",
     "cpu_limit": "not set"
   },
-  "full_worker_seconds": 17.256,
+  "full_worker_seconds": 17.094,
   "summary": {
     "total_apps": 2002,
     "changed_apps": 502,
@@ -42,114 +42,114 @@
     {
       "stage": "Нормализация и сравнение",
       "seconds": null,
-      "time": 1794041110.9064171
+      "time": 1794046055.2717698
     },
     {
       "stage": "Приведение и сравнение завершено",
-      "seconds": 13.032,
-      "time": 1794041123.9379733
+      "seconds": 12.966,
+      "time": 1794046068.2373328
     },
     {
       "stage": "Нормализация: обработка и запись строк",
-      "seconds": 9.397,
-      "time": 1794041123.9383795
+      "seconds": 9.28,
+      "time": 1794046068.2376049
     },
     {
       "stage": "Сравнение: обработка и запись строк",
-      "seconds": 1.889,
-      "time": 1794041123.9387789
+      "seconds": 1.966,
+      "time": 1794046068.2380037
     },
     {
       "stage": "Агрегация фактов counts",
       "seconds": null,
-      "time": 1794041124.5885582
+      "time": 1794046068.8630948
     },
     {
       "stage": "Агрегаты готовы",
-      "seconds": 2.762,
-      "time": 1794041127.3513079
+      "seconds": 2.717,
+      "time": 1794046071.580644
     },
     {
       "stage": "Автоматические проверки",
       "seconds": null,
-      "time": 1794041127.3518467
+      "time": 1794046071.5813408
     },
     {
-      "stage": "Проверка: s_3a35995e0bf05e4dbc3d8dcf.py",
+      "stage": "Проверка: s_69af2dc7ab55bd6488eefa84.py",
       "seconds": 0.032,
-      "time": 1794041127.3840227
+      "time": 1794046071.6137645
     },
     {
-      "stage": "Проверка: s_9af5d88f8960b55803183919.py",
-      "seconds": 0.131,
-      "time": 1794041127.5162477
+      "stage": "Проверка: s_70ee5c952f103c1aff234826.py",
+      "seconds": 0.133,
+      "time": 1794046071.7482636
     },
     {
-      "stage": "Проверка: s_16fcedd9275090fae497a67c.py",
-      "seconds": 0.007,
-      "time": 1794041127.5238054
+      "stage": "Проверка: s_9069083dd8540608145f7439.py",
+      "seconds": 0.008,
+      "time": 1794046071.757381
     },
     {
-      "stage": "Проверка: s_f967c6e39bd238ed2cd67695.py",
-      "seconds": 0.143,
-      "time": 1794041127.667567
+      "stage": "Проверка: s_b27c8167697b8ea3c512c57c.py",
+      "seconds": 0.128,
+      "time": 1794046071.8861637
     },
     {
-      "stage": "Проверка: s_32fdf3d69704da6d2d4ab5a2.py",
-      "seconds": 0.129,
-      "time": 1794041127.7972887
+      "stage": "Проверка: s_e1b2974dead38337c023e82e.py",
+      "seconds": 0.115,
+      "time": 1794046072.001855
     },
     {
       "stage": "Готово",
       "seconds": null,
-      "time": 1794041128.045872
+      "time": 1794046072.237403
     }
   ],
   "http": {
     "pivot_cold": {
-      "seconds": 0.186,
+      "seconds": 0.1861,
       "status": 200,
-      "html_bytes": 50941
+      "html_bytes": 50916
     },
     "pivot_warm": {
-      "seconds": 0.0195,
+      "seconds": 0.0294,
       "status": 200,
-      "html_bytes": 50941
+      "html_bytes": 50916
     },
     "layout_change": {
-      "seconds": 0.0158,
+      "seconds": 0.0151,
       "status": 200,
-      "html_bytes": 11000
+      "html_bytes": 10975
     },
     "filter": {
-      "seconds": 0.0118,
+      "seconds": 0.0149,
       "status": 200,
-      "html_bytes": 18505
+      "html_bytes": 18480
     },
     "applications": {
-      "seconds": 0.1634,
+      "seconds": 0.1829,
       "status": 200,
       "html_bytes": 22919
     },
     "application_card": {
-      "seconds": 0.0051,
+      "seconds": 0.0056,
       "status": 200,
       "html_bytes": 20571
     },
     "checks": {
-      "seconds": 0.0039,
+      "seconds": 0.0049,
       "status": 200,
       "html_bytes": 24841
     },
     "gemini_evidence": {
-      "seconds": 0.0207,
+      "seconds": 0.4423,
       "status": 200,
-      "html_bytes": 28455
+      "html_bytes": 41615
     }
   },
   "recheck": {
-    "snapshot_and_mart_copy_seconds": 0.197,
-    "worker_seconds": 0.319,
+    "snapshot_and_mart_copy_seconds": 0.112,
+    "worker_seconds": 0.302,
     "checks": 1
   },
   "mart_bytes": 385200128

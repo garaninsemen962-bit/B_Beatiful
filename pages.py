@@ -186,7 +186,27 @@ def deletion_page(user,item,action,execution=False,refs=None):
 
 def ai_result(row):
     result=json.loads(row['result']);evidence={x['id']:x for x in json.loads(row['evidence'])}
-    body='<p class="muted">Модель '+E(row['model'])+' · '+date(row['created'])+' · автор запроса '+E(row.get('display',''))+'</p><p>'+E(result['summary'])+'</p>'
-    for finding in result['findings']:
-        body+='<section class="finding '+E(finding['severity'])+'"><h3>'+E({'low':'Низкая','medium':'Средняя','high':'Высокая','critical':'Критическая'}[finding['severity']])+' важность</h3>'+''.join('<p><strong>'+label+':</strong> '+E(finding[key])+'</p>' for key,label in [('observation','Наблюдение'),('hypothesis','Гипотеза'),('recommendation','Что проверить')])+'<p>Основания: '+', '.join(link(evidence[x]['url'],x) for x in finding['evidence_ids'])+'</p></section>'
-    return body+'<h3>Ограничения</h3><ul>'+''.join('<li>'+E(x)+'</li>' for x in result['limitations'])+'</ul>'
+    def paragraph(text):return '<p class="ai-prose">'+E(text)+'</p>'
+    def refs(ids):
+        links=[]
+        for x in ids:
+            item=evidence.get(x)
+            if not item:continue
+            data=item.get('data',{});caption=data.get('LABEL') or data.get('PATH') or data.get('product') or {'summary':'Итоги выполнения','coverage':'Охват проверок'}.get(item.get('kind'),'Данные')
+            links.append('<a href="'+E(item['url'])+'" title="'+E(caption)+'">'+E(x)+' · '+E(str(caption)[:100])+'</a>')
+        return '<p class="ai-references">Основания: '+', '.join(links)+'</p>'
+    body='<p class="muted">Модель '+E(row['model'])+' · '+date(row['created'])+' · автор запроса '+E(row.get('display',''))+'</p><h3>Резюме</h3>'+paragraph(result['summary'])
+    if result.get('assessment'):body+='<h3>Общая оценка и приоритет разбора</h3>'+paragraph(result['assessment'])
+    body+='<h3>Разбор изменений</h3>'
+    for index,finding in enumerate(result['findings'],1):
+        importance={'low':'Низкая','medium':'Средняя','high':'Высокая','critical':'Критическая'}[finding['severity']]
+        body+='<section class="finding '+E(finding['severity'])+'"><h3>'+E(str(index)+'. '+finding['title'])+'</h3><p class="badge">'+E(importance)+' важность</p>' if finding.get('title') else '<section class="finding '+E(finding['severity'])+'"><h3>'+E(importance)+' важность</h3>'
+        for key,label in [('observation','Наблюдение'),('quantitative_details','Масштаб и цифры'),('interpretation','Почему это важно'),('hypothesis','Гипотеза')]:
+            if finding.get(key):body+='<h4>'+label+'</h4>'+paragraph(finding[key])
+        if finding.get('alternatives'):body+='<h4>Альтернативные объяснения</h4><ul>'+''.join('<li>'+E(x)+'</li>' for x in finding['alternatives'])+'</ul>'
+        body+='<h4>Что проверить</h4>'+paragraph(finding['recommendation'])+refs(finding['evidence_ids'])+'</section>'
+    if result.get('review_plan'):
+        body+='<h3>Порядок проверки</h3><ol class="ai-plan">'
+        for step in result['review_plan']:body+='<li><span class="badge">'+E(step['priority'])+'</span>'+paragraph(step['action'])+'<p><strong>Ожидаемый результат:</strong> '+E(step['expected_result'])+'</p>'+refs(step['evidence_ids'])+'</li>'
+        body+='</ol>'
+    return body+'<h3>Ограничения анализа</h3><ul>'+''.join('<li>'+E(x)+'</li>' for x in result['limitations'])+'</ul>'
