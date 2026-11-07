@@ -1,13 +1,14 @@
 """Bounded ZIP import. Never extract paths supplied by an archive."""
 import io,json,re,stat,zipfile
 from pathlib import PurePosixPath
+from engine import strict_document
 MAX_UPLOAD=64*1024*1024
 MAX_EXPANDED=256*1024*1024
 MAX_FILES=50000
 
 def dataset_zip(raw,target):
     if len(raw)>MAX_UPLOAD:raise ValueError('Архив больше 64 МБ')
-    target.mkdir(parents=True,exist_ok=True);seen=set();sizes=0;counts={'BEFORE_MASTER':0,'AFTER_BETA':0};ids=set()
+    target.mkdir(parents=True,exist_ok=True);seen=set();sizes=0;counts={'BEFORE_MASTER':0,'AFTER_BETA':0};ids=set();invalid=0;examples=[]
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         files=z.infolist()
         if len(files)>MAX_FILES:raise ValueError('Слишком много файлов')
@@ -26,9 +27,13 @@ def dataset_zip(raw,target):
             tail=({'BEFORE':'BEFORE_MASTER','AFTER':'AFTER_BETA'}.get(tail[0],tail[0]),tail[1])
             key=tuple(tail)
             if key in seen:raise ValueError('Повтор файла в ZIP')
-            seen.add(key);content=z.read(item);doc=json.loads(content.decode('utf-8-sig'))
-            if not isinstance(doc,dict):raise ValueError('Ответ должен быть JSON-объектом')
+            seen.add(key);content=z.read(item)
+            try:strict_document(content)
+            except (ValueError,TypeError,UnicodeError,RecursionError) as ex:
+                invalid+=1
+                if len(examples)<20:examples.append({'source':tail[0],'app_id':tail[1][:-5],'error':(type(ex).__name__+': '+str(ex))[:300]})
             dest=target/'RESULTS'/tail[0]/tail[1];dest.parent.mkdir(exist_ok=True,parents=True);dest.write_bytes(content)
             counts[tail[0]]+=1;ids.add(tail[1])
-    if not all(counts.values()):raise ValueError('Архив должен содержать оба непустых среза')
-    return dict(files=sum(counts.values()),apps=len(ids),slices=counts,uncompressed_bytes=sizes)
+    if not sum(counts.values()):raise ValueError('В архиве нет JSON-файлов в RESULTS/BEFORE_MASTER или RESULTS/AFTER_BETA')
+    for source in counts:(target/'RESULTS'/source).mkdir(parents=True,exist_ok=True)
+    return dict(files=sum(counts.values()),apps=len(ids),slices=counts,uncompressed_bytes=sizes,invalid_responses=invalid,validation_examples=examples)

@@ -5,7 +5,7 @@
     "execution": "host; trusted bundled code only; NOT a Docker timing",
     "cpu_limit": "not set"
   },
-  "full_worker_seconds": 17.094,
+  "full_worker_seconds": 21.378,
   "summary": {
     "total_apps": 2002,
     "changed_apps": 502,
@@ -36,121 +36,149 @@
         "attributes": 7567,
         "apps": 502
       }
-    }
+    },
+    "input_quality_available": true,
+    "input_apps": 2002,
+    "comparable_apps": 2002,
+    "excluded_apps": 0,
+    "input_errors": {
+      "BEFORE": 0,
+      "AFTER": 0
+    },
+    "pair_errors": 0
   },
   "stages": [
     {
       "stage": "Нормализация и сравнение",
       "seconds": null,
-      "time": 1794046055.2717698
+      "time": 1794049466.9482946,
+      "script": "s_ca61547386427710fc24045e.py"
     },
     {
       "stage": "Приведение и сравнение завершено",
-      "seconds": 12.966,
-      "time": 1794046068.2373328
+      "seconds": 16.778,
+      "time": 1794049483.7266316,
+      "script": "s_ddb69666bca946e22e3dfb7c.py"
     },
     {
       "stage": "Нормализация: обработка и запись строк",
-      "seconds": 9.28,
-      "time": 1794046068.2376049
+      "seconds": 6.441,
+      "time": 1794049483.7319903,
+      "script": "s_ca61547386427710fc24045e.py"
     },
     {
       "stage": "Сравнение: обработка и запись строк",
-      "seconds": 1.966,
-      "time": 1794046068.2380037
+      "seconds": 8.493,
+      "time": 1794049483.7336695,
+      "script": "s_ddb69666bca946e22e3dfb7c.py"
     },
     {
       "stage": "Агрегация фактов counts",
       "seconds": null,
-      "time": 1794046068.8630948
+      "time": 1794049484.521842,
+      "script": "s_04bfad6f09a7f7c0304a1ad5.py"
     },
     {
       "stage": "Агрегаты готовы",
-      "seconds": 2.717,
-      "time": 1794046071.580644
+      "seconds": 2.804,
+      "time": 1794049487.3263116,
+      "script": "s_04bfad6f09a7f7c0304a1ad5.py"
+    },
+    {
+      "stage": "Качество входных данных: исключено 0 заявок",
+      "seconds": null,
+      "time": 1794049487.3359551,
+      "script": null
     },
     {
       "stage": "Автоматические проверки",
       "seconds": null,
-      "time": 1794046071.5813408
+      "time": 1794049487.3361707,
+      "script": null
     },
     {
-      "stage": "Проверка: s_69af2dc7ab55bd6488eefa84.py",
-      "seconds": 0.032,
-      "time": 1794046071.6137645
+      "stage": "Проверка: s_9d5dc250bf93fe9be0378747.py",
+      "seconds": 0.051,
+      "time": 1794049487.400541,
+      "script": "s_9d5dc250bf93fe9be0378747.py"
     },
     {
-      "stage": "Проверка: s_70ee5c952f103c1aff234826.py",
-      "seconds": 0.133,
-      "time": 1794046071.7482636
+      "stage": "Проверка: s_873095a033984d71b44c064e.py",
+      "seconds": 0.166,
+      "time": 1794049487.5670695,
+      "script": "s_873095a033984d71b44c064e.py"
     },
     {
-      "stage": "Проверка: s_9069083dd8540608145f7439.py",
+      "stage": "Проверка: s_8bd6bc4a31bcbb573a0e3931.py",
       "seconds": 0.008,
-      "time": 1794046071.757381
+      "time": 1794049487.5758286,
+      "script": "s_8bd6bc4a31bcbb573a0e3931.py"
     },
     {
-      "stage": "Проверка: s_b27c8167697b8ea3c512c57c.py",
-      "seconds": 0.128,
-      "time": 1794046071.8861637
+      "stage": "Проверка: s_700c889dccb8495ea860bbdc.py",
+      "seconds": 0.144,
+      "time": 1794049487.7203374,
+      "script": "s_700c889dccb8495ea860bbdc.py"
     },
     {
-      "stage": "Проверка: s_e1b2974dead38337c023e82e.py",
-      "seconds": 0.115,
-      "time": 1794046072.001855
+      "stage": "Проверка: s_f512c7d6e79c456778e56499.py",
+      "seconds": 0.135,
+      "time": 1794049487.8555312,
+      "script": "s_f512c7d6e79c456778e56499.py"
     },
     {
       "stage": "Готово",
       "seconds": null,
-      "time": 1794046072.237403
+      "time": 1794049488.2029805,
+      "script": null
     }
   ],
   "http": {
     "pivot_cold": {
-      "seconds": 0.1861,
+      "seconds": 0.2641,
       "status": 200,
       "html_bytes": 50916
     },
     "pivot_warm": {
-      "seconds": 0.0294,
+      "seconds": 0.0309,
       "status": 200,
       "html_bytes": 50916
     },
     "layout_change": {
-      "seconds": 0.0151,
+      "seconds": 0.0219,
       "status": 200,
       "html_bytes": 10975
     },
     "filter": {
-      "seconds": 0.0149,
+      "seconds": 0.0117,
       "status": 200,
       "html_bytes": 18480
     },
     "applications": {
-      "seconds": 0.1829,
+      "seconds": 0.2492,
       "status": 200,
       "html_bytes": 22919
     },
     "application_card": {
-      "seconds": 0.0056,
+      "seconds": 0.0052,
       "status": 200,
       "html_bytes": 20571
     },
     "checks": {
-      "seconds": 0.0049,
+      "seconds": 0.004,
       "status": 200,
-      "html_bytes": 24841
+      "html_bytes": 25689
     },
     "gemini_evidence": {
-      "seconds": 0.4423,
+      "seconds": 0.4667,
       "status": 200,
-      "html_bytes": 41615
+      "html_bytes": 43517
     }
   },
   "recheck": {
-    "snapshot_and_mart_copy_seconds": 0.112,
-    "worker_seconds": 0.302,
+    "snapshot_and_mart_copy_seconds": 0.093,
+    "worker_seconds": 0.364,
     "checks": 1
   },
-  "mart_bytes": 385200128
+  "mart_bytes": 385429504
 }

@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   const show=()=>{select.nextElementSibling.textContent=select.selectedOptions[0]?.dataset.description||'Описание не задано'};select.addEventListener('change',show);show();
  }
  for(const other of document.querySelectorAll('form')){
-  if(other.elements.code||!other.querySelector('textarea'))continue;
+  if(other.elements.code||other.matches('[data-ai-start],[data-personal-prompt]')||!other.querySelector('textarea'))continue;
   let dirty=false;other.addEventListener('input',()=>dirty=true);other.addEventListener('submit',()=>dirty=false);
   window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
  }

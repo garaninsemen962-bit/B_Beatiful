@@ -34,9 +34,10 @@
  }
  form?.addEventListener('submit',async event=>{
   event.preventDefault();if(submitting||pending())return;const token=reset();submitting=true;sync();message('');
+  const promptRequest={csrf:form.elements.csrf.value,model:form.elements.model.value,prompt_mode:form.elements.prompt_mode.value,prompt_revision:form.elements.prompt_revision.value,system_prompt:form.elements.prompt_mode.value==='request'?form.elements.system_prompt.value:undefined};
   try{
-   const data=await json(await fetch(api,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({csrf:form.elements.csrf.value,model:form.elements.model.value})}));
-   if(token!==epoch||stopped)return;apply(data);history.pushState({},'',urlFor(data.analysis));schedule(token);
+   const data=await json(await fetch(api,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify(promptRequest)}));
+   if(token!==epoch||stopped)return;form.dispatchEvent(new CustomEvent('dd-ai-prompt-accepted',{detail:{mode:promptRequest.prompt_mode,text:promptRequest.system_prompt}}));apply(data);history.pushState({},'',urlFor(data.analysis));schedule(token);
   }catch(error){
    if(token!==epoch||stopped)return;
    message(error.message+' Если соединение прервалось при запуске, проверьте историю перед повторной отправкой.');

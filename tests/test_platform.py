@@ -60,7 +60,7 @@ class PlatformTests(unittest.TestCase):
   data=self.archive({'root/RESULTS/BEFORE_MASTER/A.json':'{"x":1}','root/RESULTS/AFTER_BETA/A.json':'{"x":2}'})
   info=dataset_zip(data,s.STATE/'valid');self.assertEqual(info['apps'],1)
   with self.assertRaises(ValueError):dataset_zip(self.archive({'../outside':'bad'}),s.STATE/'invalid')
-  with self.assertRaises(ValueError):dataset_zip(self.archive({'RESULTS/BEFORE_MASTER/A.json':'{}'}),s.STATE/'missing')
+  single=dataset_zip(self.archive({'RESULTS/BEFORE_MASTER/A.json':'{}'}),s.STATE/'missing');self.assertEqual(single['slices']['AFTER_BETA'],0)
  def test_container_fail_closed(self):
   rid=self.create('run')
   with patch.object(sandbox,'available',return_value=(False,'Docker unavailable')):

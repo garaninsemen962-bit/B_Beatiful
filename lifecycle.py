@@ -42,7 +42,7 @@ def resource_action(user,rid,action,expected,confirm=''):
             if r['kind']=='run':
                 for e in c.execute('SELECT id FROM executions WHERE run=? AND purged_at IS NULL',(rid,)):
                     cleanup.append(('execution',e['id']))
-                    c.execute("UPDATE analyses SET evidence='',result='' WHERE execution=?",(e['id'],))
+                    c.execute("UPDATE analyses SET evidence='',result='',prompt_config=NULL WHERE execution=?",(e['id'],))
                     c.execute('DELETE FROM views WHERE execution=?',(e['id'],))
                     s.audit(c,user,rid,'Окончательное удаление выполнения',{'execution':e['id'],'with_run':True})
                 c.execute('UPDATE executions SET deleted_at=coalesce(deleted_at,?),deleted_by=?,purged_at=? WHERE run=? AND purged_at IS NULL',(time.time(),user['id'],time.time(),rid))
@@ -73,7 +73,7 @@ def execution_action(user,eid,action,confirm=''):
         elif action=='purge':
             if e['deleted_at'] is None:raise ValueError('Сначала переместите выполнение в корзину')
             if confirm!=eid:raise ValueError('Введите полный ID выполнения для окончательного удаления')
-            c.execute("UPDATE analyses SET evidence='',result='' WHERE execution=?",(eid,))
+            c.execute("UPDATE analyses SET evidence='',result='',prompt_config=NULL WHERE execution=?",(eid,))
             c.execute('DELETE FROM views WHERE execution=?',(eid,))
             c.execute('UPDATE executions SET purged_at=? WHERE id=?',(time.time(),eid));cleanup=[('execution',eid)];label='Окончательное удаление выполнения'
         else:raise ValueError('Неизвестное действие')

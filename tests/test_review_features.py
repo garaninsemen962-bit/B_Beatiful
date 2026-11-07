@@ -15,11 +15,11 @@ class ReviewTests(unittest.TestCase):
  request=helpers.HttpTests.request
  csrf=helpers.HttpTests.csrf
  approve=helpers.HttpTests.approve
- def fixture(self):
+ def fixture(self,docs=None):
   raw=io.BytesIO()
   with zipfile.ZipFile(raw,'w') as z:
-   for source,docs in [('BEFORE',{'A1':{'a':None,'gone':1,'flag':False},'A2':{'a':1}}),('AFTER',{'A1':{'a':False,'new':None,'flag':0},'A2':{'a':2}})]:
-    for app,doc in docs.items():z.writestr('RESULTS/'+source+'/'+app+'.json',json.dumps(doc))
+   for source,source_docs in (docs or dict([('BEFORE',{'A1':{'a':None,'gone':1,'flag':False},'A2':{'a':1}}),('AFTER',{'A1':{'a':False,'new':None,'flag':0},'A2':{'a':2}})])).items():
+    for app,doc in source_docs.items():z.writestr('RESULTS/'+source+'/'+app+'.json',doc if isinstance(doc,bytes) else json.dumps(doc))
   dataset=service.save_dataset(self.admin,{'name':'Малый датасет'},raw.getvalue());ids={}
   for name,kind in [('normalize','normalizer'),('compare','comparator'),('aggregate','aggregator')]:ids[kind]=service.save_script(self.admin,{'name':name,'script_kind':kind},(s.ROOT/'procedures'/str(name+'.py')).read_text())
   code='''"""Число различий\n\nПроверка для повторного запуска."""
@@ -67,7 +67,7 @@ CHECK={"entrypoint":run,"params":{}}
   service.save_script(self.admin,{'name':'Новая версия','script_kind':'check','revision':'1'},code.replace('METRIC=1','METRIC=999'),check)
   result=folder/'test-result';result.mkdir();shutil.copytree(folder/'input/scripts',result/'scripts');cfg['source_mart']=str(folder/'input/mart.sqlite');(result/'config.json').write_text(json.dumps(cfg))
   for key in ('normalizer','comparator','aggregator'):self.assertNotIn(key,cfg)
-  proc=subprocess.run([sys.executable,str(s.ROOT/'engine.py'),str(result)],capture_output=True,timeout=20);self.assertEqual(proc.returncode,0,proc.stderr.decode());self.assertFalse((result/'mart.sqlite').exists());self.assertEqual(json.loads((result/'checks.json').read_text())['rows'][0]['METRIC'],1)
+  proc=subprocess.run([sys.executable,str(s.ROOT/'engine.py'),str(result)],capture_output=True,timeout=20);self.assertEqual(proc.returncode,0,proc.stderr.decode());self.assertFalse((result/'mart.sqlite').exists());self.assertEqual(next(x for x in json.loads((result/'checks.json').read_text())['rows'] if x['CHECK_FILE']!='__input_quality__')['METRIC'],1)
   self.assertEqual(hashlib.sha256(parent.read_bytes()).hexdigest(),digest);self.assertEqual(hashlib.sha256((folder/'input/mart.sqlite').read_bytes()).hexdigest(),digest)
  def test_gemini_validation_async_cache_and_escaping(self):
   eid,rid,_,_=self.fixture();refs,payload=ai_review.evidence(eid);self.assertNotIn('APP_IDS',json.dumps(payload))
@@ -103,7 +103,7 @@ class InteractiveAITests(ReviewTests):
  def test_async_api_selected_model_history_acl_and_legacy(self):
   import threading
   eid,rid,_,_=self.fixture();api='/api/executions/'+eid+'/ai';base='/executions/'+eid+'/ai';csrf=self.csrf(self.a);gate=threading.Event();calls=[]
-  def fake(model,payload):calls.append(model);gate.wait(5);return detailed_response()
+  def fake(model,payload,system=None):calls.append(model);gate.wait(5);return detailed_response()
   with patch.dict(os.environ,{'GEMINI_API_KEY':'fake-api-key','GEMINI_MODEL':'gemini-3.5-flash-lite'}),patch.object(ai_review,'transport',side_effect=fake):
    status,body,_=self.request(self.a,base);self.assertEqual(status,200);self.assertNotIn('http-equiv="refresh"',body);self.assertIn('/assets/ai.js',body);self.assertIn('name="model"',body)
    self.assertEqual(self.request(self.a,api,{'model':'gemini-3.8-flash'})[0],403)
@@ -118,7 +118,7 @@ class InteractiveAITests(ReviewTests):
   with s.db() as c:
    # Existing v1 result remains readable, unchanged, without a new model call.
    old=s.uid();legacy={'summary':'Старое резюме','findings':[{'severity':'low','observation':'Факт','hypothesis':'Гипотеза','recommendation':'Проверка','evidence_ids':['E1']}],'limitations':['Ограничение']}
-   c.execute('INSERT INTO analyses VALUES (?,?,?,?,?,?,?,?,?,?,?)',(old,eid,self.admin['id'],'done','old-model','legacy',json.dumps([{'id':'E1','kind':'summary','data':{},'url':'/executions/'+eid}]),json.dumps(legacy),'',1,2))
+   c.execute('INSERT INTO analyses(id,execution,actor,state,model,fingerprint,evidence,result,error,created,finished) VALUES (?,?,?,?,?,?,?,?,?,?,?)',(old,eid,self.admin['id'],'done','old-model','legacy',json.dumps([{'id':'E1','kind':'summary','data':{},'url':'/executions/'+eid}]),json.dumps(legacy),'',1,2))
   self.assertIn('Старое резюме',json.loads(self.request(self.a,api+'?analysis='+old)[1])['html'])
   uid=self.approve()
   with s.db() as c:c.execute("UPDATE resources SET visibility='public' WHERE id=?",(rid,))

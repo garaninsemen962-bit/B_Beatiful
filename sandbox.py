@@ -99,6 +99,10 @@ def launch(eid,dataset=None):
                     if source.is_symlink() or not source.is_file() or source.resolve().parent!=expected:raise ValueError('Недопустимый артефакт: '+name)
                     if source.stat().st_size>LIMIT_BYTES:raise ValueError('Слишком большой артефакт')
                     with open(source,'rb') as src,open(final/name,'wb') as dest:shutil.copyfileobj(src,dest)
+                for name in ('input_errors.json','parse_errors.log'):
+                    source=result/name
+                    if source.exists():
+                        content=safe_file(result,name,128*1024*1024);(final/name).write_bytes(content)
                 state='done'
         except Exception as ex:error=str(ex)
         finally:

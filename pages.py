@@ -27,6 +27,7 @@ def shell(user,title,body,section='',flash='',extra=''):
         nav=''.join(link('/'+URLS[k],v,'active' if section==k else '') for k,v in LABELS.items())
         nav+=link('/profile','Мой профиль','active' if section=='profile' else '')+link('/trash','Корзина','active' if section=='trash' else '')
         if user['admin']:nav+=link('/admin','Администрирование','active' if section=='admin' else '')
+        if s.is_root(user):nav+=link('/root','Сервер root','active' if section=='root' else '')
     identity=link('/profile',user['display'])+' · '+E(user['login'])+' '+form(user,'/logout',button('Выйти')) if user else link('/login','Войти')
     return '<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+E(title)+' · Decision Diff</title><link rel="stylesheet" href="/assets/style.css"><script defer src="/assets/editor.js"></script><script defer src="/assets/app.js"></script><header><div><strong>Decision Diff</strong><small>Совместный анализ изменений</small></div><div class="row">'+identity+'</div></header><div class="layout"><aside>'+nav+'</aside><main>'+('<div class="notice">'+E(flash)+'</div>' if flash else '')+'<h1>'+E(title)+'</h1>'+body+'<footer>Decision Diff 2 · серверное время отображается по Москве</footer></main></div>'+extra+'</html>'
 def auth(mode,flash=''):
@@ -74,7 +75,12 @@ def script_form(user,r=None,code='',version=None,editable=True,submitted=None,er
 def dataset_page(user,r=None,role='owner',download=False,flash=''):
     body=resource_head(r,role,download) if r else '<p>ZIP должен содержать RESULTS/BEFORE_MASTER/*.json и RESULTS/AFTER_BETA/*.json. Также принимаются RESULTS/BEFORE и RESULTS/AFTER. Допускается общая внешняя папка.</p>'
     if r:
-        data=json.loads(r['body']);body+='<div class="card">'+table(['Показатель','Значение'],[[E(k),E(v)] for k,v in data.items() if k not in ('folder',)])+'</div>'
+        data=json.loads(r['body']);body+='<div class="card">'+table(['Показатель','Значение'],[[E(k),E(v)] for k,v in data.items() if k not in ('folder','validation_examples')])+'</div>'
+    if r:
+        data=json.loads(r['body'])
+        if data.get('invalid_responses') or any(not n for n in data.get('slices',{}).values()):
+            body+='<div class="warning"><p>Есть повреждённые ответы или отсутствует целый срез. Датасет сохранён; такие пары будут исключены из сравнения, причины появятся в отчёте выполнения.</p>'+table(['Срез','Заявка','Ошибка при загрузке'],[[E(x['source']),E(x['app_id']),E(x['error'])] for x in data.get('validation_examples',[])])+'</div>'
+    body+='<p class="muted">Повреждённые JSON и заявки без одного ответа сохраняются для диагностики. В сводную попадут только корректные пары. Сведения о валидации процедурой появляются после расчёта.</p>'
     if not r or role in ('owner','editor'):
         fields=input_('revision',r['revision'] if r else 0,'hidden')+'<label>Название</label>'+input_('name',r['name'] if r else '',required=True)+'<label>Описание</label>'+textarea('description',r['description'] if r else '',3)+'<label>ZIP-архив (до 64 МБ)</label><input name="file" type="file" accept=".zip" required><p class="muted">До 256 МБ распакованных данных, не более 50 000 записей архива. Изменение создаёт новую версию; старые данные сохраняются.</p>'+button('Загрузить новую версию' if r else 'Загрузить датасет')
         body+='<div class="card">'+form(user,'/datasets/'+r['id'] if r else '/datasets/new',fields,True)+'</div>'
@@ -130,10 +136,13 @@ def admin(user,users,health,events,flash=''):
     rows=[]
     for u in users:
         controls=''
-        if u['id']!=user['id'] and not u['admin']:
+        if u['id']!=user['id'] and not u['admin'] and u['status']!='deleted':
             controls=form(user,'/admin/users/'+u['id'],select('status',[('active','Подтвердить / разблокировать'),('rejected','Отклонить'),('blocked','Заблокировать')],u['status'])+button('Применить'))
-        rows.append([E(u['display'])+'<small>'+E(u['login'])+'</small>',E(u['status']),E('Администратор' if u['admin'] else 'Участник'),link('/admin/users/'+u['id']+'/edit','Редактировать','button')+controls])
-    body='<div class="card"><h2>Пользователи</h2>'+table(['Имя','Статус','Роль','Действие'],rows)+'</div><div class="card"><h2>Контейнерный исполнитель</h2><p>'+E(health)+'</p><p class="muted">Без готового Docker runner запуск Python запрещён. До двух одновременных расчётов.</p></div><div class="card"><h2>Последние административные события</h2>'+table(['Дата','Автор','Действие'],[[date(x['created']),E(x['display']),E(x['action'])] for x in events])+'</div>'
+        actions=link('/admin/users/'+u['id']+'/restore','Восстановить','button') if u['status']=='deleted' else link('/admin/users/'+u['id']+'/edit','Редактировать','button')+controls
+        if u.get('server_root') and not s.is_root(user):actions='<span class="muted">Защищённая учётная запись root</span>'
+        if u['status']!='deleted' and u['id']!=user['id'] and not u.get('server_root'):actions+=link('/admin/users/'+u['id']+'/delete','Удалить','button danger')
+        rows.append([E(u['display'])+'<small>'+E(u['login'])+'</small>',E(u['status']),E('Root сервера' if u.get('server_root') else 'Администратор' if u['admin'] else 'Участник'),actions])
+    body='<p>'+link('/admin','Действующие пользователи')+' · '+link('/admin?deleted=1','Удалённые пользователи')+'</p><div class="card"><h2>Пользователи</h2>'+table(['Имя','Статус','Роль','Действие'],rows)+'</div><div class="card"><h2>Контейнерный исполнитель</h2><p>'+E(health)+'</p><p class="muted">Без готового Docker runner запуск Python запрещён. До двух одновременных расчётов.</p></div><div class="card"><h2>Последние административные события</h2>'+table(['Дата','Автор','Действие'],[[date(x['created']),E(x['display']),E(x['action'])] for x in events])+'</div>'
     return shell(user,'Администрирование',body,'admin',flash)
 def execution_head(user,r,e,section):
     base='/executions/'+e['id'];body='<div class="crumb">'+link('/runs','Прогоны')+' / '+link('/runs/'+r['id'],r['name'])+' / '+E(e['id'][:12])+'</div><div class="tabs">'
@@ -209,4 +218,27 @@ def ai_result(row):
         body+='<h3>Порядок проверки</h3><ol class="ai-plan">'
         for step in result['review_plan']:body+='<li><span class="badge">'+E(step['priority'])+'</span>'+paragraph(step['action'])+'<p><strong>Ожидаемый результат:</strong> '+E(step['expected_result'])+'</p>'+refs(step['evidence_ids'])+'</li>'
         body+='</ol>'
-    return body+'<h3>Ограничения анализа</h3><ul>'+''.join('<li>'+E(x)+'</li>' for x in result['limitations'])+'</ul>'
+    return body+'<h3>Ограничения анализа</h3><ul>'+''.join('<li>'+E(x)+'</li>' for x in result['limitations'])+'</ul>'+prompt_snapshot(row)
+
+def ai_prompt_fields(user,profile=False,submitted=None,error=''):
+    import ai_prompts
+    pref=ai_prompts.read(user);values=submitted or {};revision=values.get('prompt_revision',pref['revision']);text=values.get('system_prompt',pref['text'])
+    data={'builtin':ai_prompts.DEFAULT_SYSTEM,'personal':pref['text'],'revision':revision,'custom':pref['custom']}
+    kind='profile' if profile else 'analysis'
+    body='<details class="prompt-settings" data-prompt-area data-prompt-kind="'+kind+'" '+('open' if error else '')+'><summary>'+('Личный системный промпт Gemini' if profile else 'Дополнительные настройки Gemini')+'</summary><div class="prompt-settings-body">'
+    if error:body+='<p class="error">'+E(error)+'</p>'
+    body+='<p>Личный промпт используется по умолчанию для ваших новых анализов. Для отдельного запуска можно выбрать свой текст. Формат JSON и проверка ссылок задаются приложением отдельно.</p>'
+    if not profile:body+='<label>Источник промпта</label>'+select('prompt_mode',[('personal','Мой промпт по умолчанию'),('request','Свой для этого запуска'),('builtin','Стандартный промпт приложения')],'personal')
+    body+=input_('prompt_revision',revision,'hidden')+'<label>Системный промпт</label>'+textarea('system_prompt',text,13,'system-prompt').replace('<textarea ','<textarea maxlength="16000" '+('readonly ' if not profile else ''))
+    body+='<p class="muted">До 16000 символов. Сохранение личного промпта не запускает Gemini. Текст, использованный в анализе, сохраняется вместе с результатом и доступен читателям этого прогона.</p><div class="row space">'
+    if profile:body+='<button class="primary" name="action" value="save">Сохранить мой промпт</button><button name="action" value="reset">Сбросить личный промпт</button>'
+    else:body+='<button type="button" data-prompt-save>Сохранить как мой промпт по умолчанию</button><button type="button" data-prompt-reset>Сбросить личный промпт</button>'
+    body+='</div><p data-prompt-message role="status"></p><script type="application/json" data-prompt-settings>'+json.dumps(data,ensure_ascii=False).replace('<','\\u003c')+'</script></div></details>'
+    if profile:body='<div class="card">'+form(user,'/profile/ai-prompt',body).replace('<form ','<form data-personal-prompt ' )+'</div>'
+    return body
+
+def prompt_snapshot(row):
+    raw=row.get('prompt_config')
+    if not raw:return '<details class="prompt-snapshot"><summary>Использованный системный промпт</summary><p class="muted">Для этого старого анализа текст промпта не сохранялся.</p></details>'
+    config=json.loads(raw);source={'personal':'Личный промпт автора запроса','builtin':'Стандартный промпт приложения','request':'Свой текст для этого запуска'}.get(config['source'],config['source'])
+    return '<details class="prompt-snapshot"><summary>Использованный системный промпт</summary><p>'+E(source)+(' · личная версия '+E(config['preference_revision']) if config['source']=='personal' else '')+'</p><p class="muted">SHA-256: '+E(config['sha256'])+'</p><pre>'+E(config['text'])+'</pre><details><summary>Полный текст, отправленный модели</summary><pre>'+E(config['system'])+'</pre></details></details>'

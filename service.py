@@ -123,6 +123,7 @@ def import_demo(user):
         ids={}
         labels={'normalize':'Нормализация ответов СПР','compare':'Сравнение атрибутов','aggregate':'Агрегация фактов counts','check_ar_drop_by_product':'Падение доли одобрений','check_attribute_new_loss':'Изменение состава атрибутов','check_external_score_drift':'Изменение внешнего скора','check_stop_factor_disappeared':'Исчезновение стоп-фактора','check_target_model_changed':'Смена целевой модели'}
         for p in [*(s.ROOT/'procedures').glob('*.py'),*(s.ROOT/'checks').glob('*.py')]:
+            if p.name=='check_parse_errors.py':continue # Технический отчёт качества уже добавляется движком автоматически.
             code=p.read_text(encoding='utf-8');kind={'normalize':'normalizer','compare':'comparator','aggregate':'aggregator'}.get(p.stem,'check');_,desc=s.script_info(code,kind)
             file=s.uid()+'.py';(s.STATE/'objects'/file).write_text(code,encoding='utf-8')
             ids[p.stem]=s.create(c,user,'script',labels.get(p.stem,p.stem),desc,{'script_kind':kind,'file':file,'filename':p.name,'sha256':hashlib.sha256(code.encode()).hexdigest()},'public')

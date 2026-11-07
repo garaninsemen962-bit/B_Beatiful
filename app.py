@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse,parse_qs,unquote,urlencode
 import store as s
-import service,sandbox,pages as p,reports,accounts,lifecycle,pivot,ai_review,ai_models,ai_views
+import service,sandbox,pages as p,reports,accounts,lifecycle,pivot,ai_review,ai_models,ai_views,ai_prompts,root_admin
 from engine import Mart
 from uploads import MAX_UPLOAD
 
@@ -20,7 +20,8 @@ class Handler(BaseHTTPRequestHandler):
         raw=body.encode('utf-8') if isinstance(body,str) else body
         self.send_response(status)
         for k,v in {'Content-Type':kind,'Content-Length':str(len(raw)),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'same-origin',**(headers or {})}.items():self.send_header(k,v)
-        self.end_headers();self.wfile.write(raw)
+        try:self.end_headers();self.wfile.write(raw)
+        except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):self.close_connection=True
     def json(self,value,status=200):self.send(json.dumps(value,ensure_ascii=False),status,'application/json; charset=utf-8')
     def redirect(self,path,message=''):
         if message:path+=('&' if '?' in path else '?')+urlencode({'message':message})
@@ -29,7 +30,7 @@ class Handler(BaseHTTPRequestHandler):
         cookie=SimpleCookie(self.headers.get('Cookie',''));token=cookie.get('session')
         if not token:return None
         with s.db() as c:
-            row=c.execute('SELECT users.*,sessions.csrf FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>?',(token.value,time.time())).fetchone()
+            row=c.execute('SELECT users.*,sessions.csrf,sessions.root_until FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>?',(token.value,time.time())).fetchone()
         return dict(row) if row else None
     def fields(self):
         length=int(self.headers.get('Content-Length','0'))
@@ -86,7 +87,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('/login','/register'):
             if not post:return self.send(p.auth(path[1:],q.get('message','')))
             if path=='/register':user=s.register(f['login'],f['display'],f['password'])
-            else:user=s.authenticate(f['login'],f['password'])
+            else:user=root_admin.authenticate(f['login'],f['password'],self.client_address[0])
             token=s.session(user);return self.send('',303,headers={'Set-Cookie':f'session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400','Location':'/runs' if user['status']=='active' else '/account'})
         if not user:return self.redirect('/login')
         if path=='/logout' and post:
@@ -96,13 +97,28 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/account':return self.send(p.pending(user))
         if user['status']!='active':return self.redirect('/account')
         if path=='/':return self.redirect('/runs')
+        if path=='/root' or path.startswith('/root/') or path.startswith('/api/root/'):return root_admin.route(self,post)
+        if path=='/api/me/ai-prompt':
+            if post:
+                action=f.get('action','save')
+                if action not in ('save','reset'):raise ValueError('Неизвестное действие с промптом')
+                pref=ai_prompts.save(user,f.get('system_prompt',''),f.get('revision'),reset=action=='reset')
+            else:pref=ai_prompts.read(user)
+            return self.json(pref)
+        if path=='/profile/ai-prompt':
+            if not post:return self.redirect('/profile')
+            action=f.get('action','save')
+            if action not in ('save','reset'):raise ValueError('Неизвестное действие с промптом')
+            try:ai_prompts.save(user,f.get('system_prompt',''),f.get('prompt_revision'),reset=action=='reset')
+            except ValueError as ex:return self.send(p.shell(user,'Личный промпт Gemini',p.ai_prompt_fields(user,True,submitted=f,error=str(ex)),'profile',extra='<script defer src="/assets/prompts.js"></script>'),422)
+            return self.redirect('/profile','Личный промпт Gemini сохранён')
         if path=='/profile':
             with s.db() as c:target=dict(c.execute('SELECT * FROM users WHERE id=?',(user['id'],)).fetchone())
             if post:
                 try:revoke=accounts.update(user,user['id'],f)
-                except (ValueError,PermissionError) as ex:return self.send(p.user_form(user,target,submitted=f,error=str(ex)),422)
+                except (ValueError,PermissionError) as ex:return self.send(self.profile_page(target,submitted=f,error=str(ex)),422)
                 return self.redirect('/login' if revoke else '/profile','Изменения сохранены. Войдите заново.' if revoke else 'Профиль обновлён')
-            return self.send(p.user_form(user,target,flash=q.get('message','')))
+            return self.send(self.profile_page(target,flash=q.get('message','')))
         if path=='/trash':
             resources,executions=lifecycle.trash(user);return self.send(p.trash_page(user,resources,executions,q.get('message','')))
 
@@ -110,6 +126,18 @@ class Handler(BaseHTTPRequestHandler):
             name,desc=s.script_info(f['code'],f['kind'],validate=False);return self.json({'name':name,'description':desc})
         if path.startswith('/admin'):
             if not user['admin']:raise PermissionError('Требуются права администратора')
+            if path.startswith('/admin/users/') and path.rsplit('/',1)[-1] in ('delete','restore'):
+                uid=path.split('/')[3];action=path.rsplit('/',1)[-1]
+                with s.db() as c:
+                    row=c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone()
+                    if not row:raise FileNotFoundError('Пользователь не найден')
+                    target=dict(row)
+                if post:
+                    accounts.delete_user(user,uid,f['revision'],restore=action=='restore')
+                    return self.redirect('/admin','Пользователь восстановлен в заблокированном состоянии' if action=='restore' else 'Пользователь удалён; история и ресурсы сохранены')
+                owned=len([x for x in s.visible(user) if x['owner']==uid])
+                body='<div class="card"><p>'+p.E(target['display'])+' · '+p.E(target['login'])+'</p><p>При удалении доступ закрывается и сессии отзываются. Ресурсы ('+str(owned)+') и авторство сохраняются. Восстановленный пользователь будет заблокирован до отдельного разрешения администратора.</p>'+p.form(user,path,p.input_('revision',target['revision'],'hidden')+p.button('Восстановить пользователя' if action=='restore' else 'Удалить пользователя'))+'</div>'
+                return self.send(p.shell(user,'Восстановление пользователя' if action=='restore' else 'Удаление пользователя',body,'admin'))
             if path.startswith('/admin/users/') and path.endswith('/edit'):
                 uid=path.split('/')[3]
                 with s.db() as c:
@@ -127,13 +155,13 @@ class Handler(BaseHTTPRequestHandler):
                 if status not in ('active','rejected','blocked'):raise ValueError('Неверный статус')
                 with s.db() as c:
                     target=c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone()
-                    if not target or target['admin'] or target['id']==user['id']:raise PermissionError('Нельзя изменить этого пользователя')
+                    if not target or target['admin'] or target['status']=='deleted' or target['id']==user['id']:raise PermissionError('Нельзя изменить этого пользователя')
                     c.execute('UPDATE users SET status=?,revision=revision+1 WHERE id=?',(status,uid))
                     # Approval and blocking both revoke old sessions; pending users log in again.
                     c.execute('DELETE FROM sessions WHERE user_id=?',(uid,))
                     s.audit(c,user,None,'Изменение статуса пользователя',{'user':uid,'login':target['login'],'before':target['status'],'after':status})
                 return self.redirect('/admin','Статус изменён; пользователю нужно войти заново')
-            with s.db() as c:users=[dict(x) for x in c.execute('SELECT * FROM users ORDER BY created DESC')];events=[dict(x) for x in c.execute('SELECT * FROM audit WHERE resource IS NULL ORDER BY id DESC LIMIT 100')]
+            with s.db() as c:users=[dict(x) for x in c.execute("SELECT * FROM users WHERE status="+("'deleted'" if q.get('deleted')=='1' else "'active' OR status IN ('pending','blocked','rejected')")+" ORDER BY created DESC")];events=[dict(x) for x in c.execute('SELECT * FROM audit WHERE resource IS NULL ORDER BY id DESC LIMIT 100')]
             _,health=sandbox.available();html=p.admin(user,users,health,events,q.get('message',''))
             html=html.replace('<footer>',p.form(user,'/admin/demo',p.button('Добавить открытый датасет и исходные проверки'))+'<footer>')
             return self.send(html)
@@ -257,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({'models':ai_models.catalog(),'message':'Список получен из Google (кэш до 15 минут). Наличие в каталоге не гарантирует успешный запуск или свободную квоту.'})
                 if len(parts)!=4:raise FileNotFoundError('Страница не найдена')
                 if post:
-                    aid=ai_review.start(user,eid,f.get('model'));data=ai_views.panel(user,eid,aid)
+                    aid=ai_review.start(user,eid,f.get('model'),f.get('prompt_mode','personal'),f.get('system_prompt'),f.get('prompt_revision'));data=ai_views.panel(user,eid,aid)
                     return self.json(data,202 if data['state'] in ('queued','running') else 200)
                 return self.json(ai_views.panel(user,eid,q.get('analysis')))
             folder=s.STATE/'executions'/eid
@@ -307,7 +335,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(p.shell(user,'Проверки по готовой витрине',body,'run'),422 if error else 200)
         if section=='/ai':
             if post:
-                aid=ai_review.start(user,eid,self.form.get('model'));return self.redirect(base+'/ai?analysis='+aid)
+                aid=ai_review.start(user,eid,self.form.get('model'),self.form.get('prompt_mode','personal'),self.form.get('system_prompt'),self.form.get('prompt_revision'));return self.redirect(base+'/ai?analysis='+aid)
             return self.send(self.ai_page(e,r))
         if post:raise ValueError('Результат выполнения неизменяем. Создайте новое выполнение.')
         head=p.execution_head(user,r,e,section)
@@ -327,7 +355,10 @@ class Handler(BaseHTTPRequestHandler):
             elif e['state'] in ('running','queued'):status=sandbox.status_file(s.STATE/'executions'/eid/'result')
             body=head+'<div class="card" data-execution="'+eid+'" data-initial-state="'+p.E(e['state'])+'"><h2>Состояние выполнения</h2><progress max="100" value="'+str(status.get('progress',0))+'"></progress><p data-stage>'+p.E(status.get('stage',e['state']))+'</p><p class="muted">Начало: '+p.date(e['created'])+' · завершение: '+p.date(e['finished'])+'</p>'+('<pre class="error">'+p.E(e['error'])+'</pre>' if e['error'] else '')+'</div>'
             if e['state']=='done':
-                summary=reports.artifact(eid,'summary.json');body+='<div class="metrics">'+''.join('<div class="metric"><span class="muted">'+label+'</span><b>'+str(summary[key])+'</b></div>' for key,label in [('total_apps','Всего заявок'),('changed_apps','С различиями'),('decision_changed','Сменили решение'),('rows','Атрибутов сравнения')])+'</div>'
+                summary=reports.artifact(eid,'summary.json');body+='<div class="metrics">'+''.join('<div class="metric"><span class="muted">'+label+'</span><b>'+str(summary[key])+'</b></div>' for key,label in [('total_apps','Сопоставимых заявок'),('changed_apps','С различиями'),('decision_changed','Сменили решение'),('rows','Атрибутов сравнения')])+'</div>'
+                if summary.get('input_quality_available'):
+                    body+='<div class="card"><h2>Качество входных данных</h2><p>Входных заявок: '+str(summary['input_apps'])+' · сопоставлено: '+str(summary['total_apps'])+' · исключено: '+str(summary['excluded_apps'])+'.</p><p>Сводная и бизнес-проверки используют только корректные пары BEFORE/AFTER. Проверки ошибок используют все входные заявки.</p>'+p.link(base+'/applications?excluded=1','Посмотреть исключённые заявки','button')+' '+p.link(base+'/input-errors','Скачать причины в JSON','button')+'</div>'
+                else:body+='<div class="warning">Для этой витрины качество исходных ответов неизвестно. Выполните новый полный расчёт с обновлённым контейнером.</div>'
                 body+='<div class="card"><h2>Изменения решений</h2>'+p.table(['Переход','Заявок'],[[p.E(k),str(v)] for k,v in summary['transitions'].items()])+'</div>'
             logs=[]
             for x in status.get('logs',[]):
@@ -339,6 +370,10 @@ class Handler(BaseHTTPRequestHandler):
             body+='<details class="card"><summary>Вывод Python</summary><pre>'+p.E(text)+'</pre></details><details class="card"><summary>Входы, версии и контрольные суммы</summary><pre>'+p.E(json.dumps(manifest,ensure_ascii=False,indent=2))+'</pre></details>'
             return self.send(p.shell(user,'Выполнение '+eid[:12],body,'run'))
         if e['state']!='done':return self.send(p.shell(user,'Результат ещё не готов',head+'<div class="card">Дождитесь успешного завершения выполнения.</div>','run'))
+        if section=='/input-errors':
+            file=s.STATE/'executions'/eid/'artifacts/input_errors.json'
+            if not file.is_file():raise FileNotFoundError('У этого выполнения нет отчёта качества. Создайте новый полный расчёт с обновлённым контейнером.')
+            return self.send(file.read_bytes(),kind='application/json; charset=utf-8',headers={'Content-Disposition':'attachment; filename="input-errors.json"'})
         if section in ('/checks','/export'):
             checks=reports.artifact(eid,'checks.json');rows=[]
             for x in checks['rows']:
@@ -359,8 +394,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts)>3:
                 app=parts[3]
                 with reports.connect(eid) as c:
-                    rows=list(Mart(c).rows(app_ids=[app]));seg=next((x for x in Mart(c).segments() if x['APP_ID']==app),{})
-                if not rows:raise FileNotFoundError('Заявка не найдена')
+                    mart=Mart(c);rows=list(mart.rows(app_ids=[app]));seg=next((x for x in mart.segments() if x['APP_ID']==app),{});quality=mart.input_status([app]);pair_errors=mart.pair_errors([app])
+                if not rows and not seg and not quality:raise FileNotFoundError('Заявка не найдена')
+                if quality and not seg:
+                    body=head+'<p>'+p.link(base+'/applications?'+urlencode({k:v for k,v in q.items() if k!='all'}),'← Назад к выбранному списку')+'</p><div class="card input-quality"><h2>Заявка исключена из сравнения</h2><p>Нет корректной пары BEFORE/AFTER. Строки этой заявки не включены в сводную и бизнес-проверки.</p>'+p.table(['Срез','Статус','Причина'],[[p.E(x['SOURCE']),p.E(x['STATUS']),p.E(x['ERROR'] or 'Ответ прочитан и разобран')] for x in quality])+(p.table(['Общий этап пары','Причина'],[[p.E(x['STAGE']),p.E(x['ERROR'])] for x in pair_errors]) if pair_errors else '')+'</div>'
+                    return self.send(p.shell(user,app,body,'run'))
                 allrows=q.get('all')=='1'
                 body=head+'<p>'+p.link(base+'/applications?'+urlencode({k:v for k,v in q.items() if k not in ('all',)}),'← Назад к выбранному списку')+'</p>'+p.link(self.path_only+'?'+urlencode({**q,'all':'0' if allrows else '1'}),'Показать только изменения' if allrows else 'Показать все атрибуты','button')
                 focus=q.get('focus_path') or json.loads(q.get('filter','{}')).get('PATH')
@@ -379,8 +417,14 @@ class Handler(BaseHTTPRequestHandler):
                 body+='<div class="card">'+p.table(['Путь','Ключ массива','До','После','Тип'],[[p.link(self.path_only+'?'+urlencode({**q,'focus_path':x['PATH'],'focus_array':x['ARRAY_KEY']})+'#focus',x['PATH']),p.E(x['ARRAY_KEY']),'<i>отсутствует</i>' if x['CHANGE_TYPE']=='ATTRIBUTE_NEW' else p.E(json.dumps(x['VALUE_BEFORE'],ensure_ascii=False)),'<i>отсутствует</i>' if x['CHANGE_TYPE']=='ATTRIBUTE_LOST' else p.E(json.dumps(x['VALUE_AFTER'],ensure_ascii=False)),p.E(pivot.TYPES.get(x['CHANGE_TYPE'],x['CHANGE_TYPE']))] for x in rows if allrows or x['DIFF_FLAG']])+'</div><details class="card"><summary>Разрезы и сведения по продуктам</summary><pre>'+p.E(json.dumps(seg,ensure_ascii=False,indent=2))+'</pre></details>'
 
                 return self.send(p.shell(user,app,body,'run'))
-            ids=set(json.loads(q['ids'])) if 'ids' in q else set().union(*(apps for _,apps in reports.selected(eid,q)))
-            with reports.connect(eid) as c:apps=[x for x in Mart(c).segments() if x['APP_ID'] in ids]
+            ids=set(json.loads(q['ids'])) if 'ids' in q else (set() if q.get('excluded')=='1' else set().union(*(apps for _,apps in reports.selected(eid,q))))
+            with reports.connect(eid) as c:
+                mart=Mart(c)
+                if q.get('excluded')=='1':ids=set(mart.excluded_app_ids())
+                apps=[x for x in mart.segments() if x['APP_ID'] in ids];present={x['APP_ID'] for x in apps}
+                excluded=set(mart.excluded_app_ids()) & ids
+                apps.extend(dict(APP_ID=appid,DECISION_BEFORE='Не сравнивалась',DECISION_AFTER='Исключена',PRODUCTS='') for appid in sorted(excluded-present))
+                apps.sort(key=lambda x:x['APP_ID'])
             offset=max(0,int(q.get('offset',0)));rows=[]
             for x in apps[offset:offset+100]:rows.append([p.link(base+'/applications/'+x['APP_ID']+'?'+urlencode(q)+('#focus' if q.get('focus_path') else ''),x['APP_ID']),p.E(x['DECISION_BEFORE']),p.E(x['DECISION_AFTER']),p.E(x['PRODUCTS'])])
             body=head+'<p>'+str(len(apps))+' заявок. '+p.link(base+'/pivot?'+urlencode(pivot.query(json.loads(q['return'])) if 'return' in q else {k:v for k,v in q.items() if k not in ('filter','ids','offset','focus_path','focus_array')}),'Вернуться к сводной')+'</p><div class="card">'+p.table(['Заявка','До','После','Продукты'],rows)+'</div>'+self.pagination(base+'/applications',q,offset,len(apps))
@@ -388,6 +432,9 @@ class Handler(BaseHTTPRequestHandler):
         raise FileNotFoundError('Страница не найдена')
     def pagination(self,url,q,offset,total):
         return '<div class="row">'+(p.link(url+'?'+urlencode({**q,'offset':max(0,offset-100)}),'← Назад','button') if offset else '')+'<span>'+str(min(offset+1,total))+'–'+str(min(offset+100,total))+' из '+str(total)+'</span>'+(p.link(url+'?'+urlencode({**q,'offset':offset+100}),'Далее →','button') if offset+100<total else '')+'</div>'
+    def profile_page(self,target,submitted=None,error='',flash=''):
+        html=p.user_form(self.user,target,submitted=submitted,error=error,flash=flash)
+        return html.replace('<footer>',p.ai_prompt_fields(self.user,True)+'<footer>').replace('</html>','<script defer src="/assets/prompts.js"></script></html>')
     def ai_page(self,e,r):
         eid=e['id'];base='/executions/'+eid;data=ai_views.panel(self.user,eid,self.q.get('analysis'))
         with s.db() as c:role=s.role(c,self.user,s.resource(c,e['run']))
@@ -397,13 +444,13 @@ class Handler(BaseHTTPRequestHandler):
         body=p.execution_head(self.user,r,e,'/ai')+'<div class="card" data-ai-controller data-ai-api="/api/executions/'+eid+'/ai"><h2>Подробный разбор результатов</h2><p>Анализ включает масштабы изменений, интерпретацию, альтернативные объяснения и порядок проверки гипотез. Выводы опираются на сводку и результаты проверок.</p><p>'+p.E(message)+'</p>'
         if ok and role in ('owner','editor'):
             fields='<label for="gemini-model">Модель Gemini</label>'+p.select('model',options,selected).replace('<select ','<select id="gemini-model" ')
-            fields+='<p class="muted">Модель выбирается для этого запроса. Типовой список можно дополнить каталогом Google. Разные модели могут иметь разные цены, ограничения и доступность.</p><button type="button" data-ai-models>Загрузить список из Google</button><p data-ai-model-message role="status"></p><p>Будет отправлена показанная ниже сводка; запрос использует квоту API вашего проекта.</p>'+p.button('Отправить сводку в Gemini')
+            fields+='<p class="muted">Модель выбирается для этого запроса. Типовой список можно дополнить каталогом Google. Разные модели могут иметь разные цены, ограничения и доступность.</p><button type="button" data-ai-models>Загрузить список из Google</button><p data-ai-model-message role="status"></p><p>Будет отправлена показанная ниже сводка; запрос использует квоту API вашего проекта.</p>'+p.ai_prompt_fields(self.user)+p.button('Отправить сводку в Gemini')
             body+=p.form(self.user,base+'/ai',fields).replace('<form ','<form data-ai-start ')
         body+='<p>Полные ответы СПР, идентификаторы заявок, исходный код и пароли не передаются. Сводка содержит до 80 строк проверок, 30 групп изменённых путей, продуктовые группы и пересечения со сменой решения. Названия и аргументы проверок входят в отправку.</p><details data-ai-preview><summary>Данные для отправки ('+str(len(json.dumps(payload,ensure_ascii=False).encode()))+' байт)</summary><pre>'+p.E(json.dumps(payload,ensure_ascii=False,indent=2))+'</pre></details><p class="error" data-ai-network role="status" hidden></p></div>'+ai_views.container(data)
-        return p.shell(self.user,'Анализ Gemini',body,'run',extra='<script defer src="/assets/ai.js"></script>')
+        return p.shell(self.user,'Анализ Gemini',body,'run',extra='<script defer src="/assets/prompts.js"></script><script defer src="/assets/ai.js"></script>')
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8765);parser.add_argument('--host',default='127.0.0.1');recovery=parser.add_mutually_exclusive_group();recovery.add_argument('--create-admin',metavar='LOGIN');recovery.add_argument('--reset-password',metavar='LOGIN');parser.add_argument('--import-demo',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8765);parser.add_argument('--host',default='127.0.0.1');recovery=parser.add_mutually_exclusive_group();recovery.add_argument('--create-admin',metavar='LOGIN');recovery.add_argument('--create-root',action='store_true');parser.add_argument('--enable-root-console',action='store_true');recovery.add_argument('--reset-password',metavar='LOGIN');parser.add_argument('--import-demo',action='store_true');args=parser.parse_args()
     if args.reset_password:
         if args.import_demo:raise SystemExit('--import-demo не используется при сбросе пароля')
         if not (s.STATE/'app.sqlite').exists():raise SystemExit('База пользователей не найдена. Проверьте папку установки и DD_STATE.')
@@ -416,6 +463,13 @@ def main():
         except ValueError as ex:raise SystemExit(str(ex))
         print('Пароль изменён. Прежние сессии закрыты. Войдите с новым паролем.');return
     s.init()
+    if args.create_root:
+        display=input('Имя root: ').strip() or 'Root';password=getpass.getpass('Новый пароль root (минимум 12 символов): ')
+        if password!=getpass.getpass('Повторите пароль: '):raise SystemExit('Пароли не совпали')
+        try:root_user=s.create_root(display,password)
+        except ValueError as ex:raise SystemExit(str(ex))
+        if args.import_demo:service.import_demo(root_user)
+        print('Root настроен. Прежние сессии root закрыты. Для серверной консоли запускайте app.py с --enable-root-console.');return
     if args.create_admin:
         display=input('Имя администратора: ').strip() or args.create_admin
         password=getpass.getpass('Пароль (минимум 8 символов): ')
@@ -424,5 +478,5 @@ def main():
         if args.import_demo:service.import_demo(user)
         print('Администратор создан. Теперь запустите python app.py');return
     if args.import_demo:raise SystemExit('--import-demo используется вместе с --create-admin')
-    sandbox.recover();ai_review.recover();print(f'Откройте http://{args.host}:{args.port}',flush=True);ThreadingHTTPServer((args.host,args.port),Handler).serve_forever()
+    sandbox.recover();ai_review.recover();server=ThreadingHTTPServer((args.host,args.port),Handler);server.root_console_enabled=args.enable_root_console;print(f'Откройте http://{args.host}:{args.port}',flush=True);server.serve_forever()
 if __name__=='__main__':main()

@@ -15,8 +15,8 @@ def init():
     for p in ('objects','executions'): (STATE/p).mkdir(parents=True,exist_ok=True)
     with db() as c:
         tables={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        migrations={'users':{'revision':'INTEGER NOT NULL DEFAULT 0'},'resources':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'},'executions':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'}}
-        need_migration=not {'views','analyses'}<=tables or any(col not in {r[1] for r in c.execute('PRAGMA table_info('+table+')')} for table,cols in migrations.items() for col in cols)
+        migrations={'users':{'revision':'INTEGER NOT NULL DEFAULT 0','server_root':'INTEGER NOT NULL DEFAULT 0'},'resources':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'},'executions':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'},'analyses':{'prompt_config':'TEXT'},'sessions':{'root_until':'REAL NOT NULL DEFAULT 0'}}
+        need_migration=not {'views','analyses','ai_preferences'}<=tables or any(col not in {r[1] for r in c.execute('PRAGMA table_info('+table+')')} for table,cols in migrations.items() for col in cols)
         if 'users' in tables and need_migration and c.execute('SELECT count(*) FROM users').fetchone()[0]:
             backup=STATE/'backups';backup.mkdir(exist_ok=True);target=sqlite3.connect(backup/('before-update-'+str(time.time_ns())+'.sqlite'))
             try:c.backup(target)
@@ -31,22 +31,25 @@ def init():
         CREATE TABLE IF NOT EXISTS executions(id TEXT PRIMARY KEY,run TEXT REFERENCES resources(id),actor TEXT,state TEXT,manifest TEXT,created REAL,finished REAL,error TEXT);
         CREATE TABLE IF NOT EXISTS views(user_id TEXT REFERENCES users(id),execution TEXT REFERENCES executions(id),kind TEXT,body TEXT,updated REAL,PRIMARY KEY(user_id,execution,kind));
         CREATE TABLE IF NOT EXISTS analyses(id TEXT PRIMARY KEY,execution TEXT REFERENCES executions(id),actor TEXT REFERENCES users(id),state TEXT,model TEXT,fingerprint TEXT,evidence TEXT,result TEXT,error TEXT,created REAL,finished REAL);
+        CREATE TABLE IF NOT EXISTS ai_preferences(user_id TEXT PRIMARY KEY REFERENCES users(id),prompt TEXT,revision INTEGER NOT NULL,updated REAL);
         CREATE INDEX IF NOT EXISTS analyses_execution ON analyses(execution,created);
         CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT,'Audit is append-only'); END;
         CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT,'Audit is append-only'); END;
         CREATE TRIGGER IF NOT EXISTS version_no_update BEFORE UPDATE ON versions BEGIN SELECT RAISE(ABORT,'Versions are immutable'); END;
         CREATE TRIGGER IF NOT EXISTS version_no_delete BEFORE DELETE ON versions BEGIN SELECT RAISE(ABORT,'Versions are immutable'); END;
         ''')
-        migrations={'users':{'revision':'INTEGER NOT NULL DEFAULT 0'},'resources':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'},'executions':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'}}
+        migrations={'users':{'revision':'INTEGER NOT NULL DEFAULT 0','server_root':'INTEGER NOT NULL DEFAULT 0'},'resources':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'},'executions':{'deleted_at':'REAL','deleted_by':'TEXT','purged_at':'REAL'},'analyses':{'prompt_config':'TEXT'},'sessions':{'root_until':'REAL NOT NULL DEFAULT 0'}}
         missing=[(table,col,typ) for table,cols in migrations.items() for col,typ in cols.items() if col not in {row[1] for row in c.execute('PRAGMA table_info('+table+')')}]
         if missing:
             c.execute('BEGIN IMMEDIATE')
             for table,col,typ in missing:c.execute('ALTER TABLE '+table+' ADD COLUMN '+col+' '+typ)
+        c.execute("CREATE TRIGGER IF NOT EXISTS analysis_prompt_immutable BEFORE UPDATE OF prompt_config ON analyses WHEN OLD.prompt_config IS NOT NULL AND NEW.prompt_config IS NOT NULL AND NEW.prompt_config IS NOT OLD.prompt_config BEGIN SELECT RAISE(ABORT,'Analysis prompt is immutable'); END")
         c.execute('CREATE INDEX IF NOT EXISTS resources_deleted ON resources(deleted_at,purged_at)')
 def uid():return secrets.token_hex(12)
 def audit(c,user,resource,action,details=None):
     c.execute('INSERT INTO audit(resource,actor,display,action,details,created) VALUES (?,?,?,?,?,?)',(resource,user['id'],user['display'],action,json.dumps(details or {},ensure_ascii=False),time.time()))
 def register(login,display,password,admin=False):
+    if login.lower()=='root':raise ValueError('Логин root создаётся только локальной командой --create-root')
     if not re.fullmatch('[A-Za-z0-9_-]{2,32}',login):raise ValueError('Логин: 2–32 латинских символа, цифры, _ или -')
     if len(password)<8:raise ValueError('Пароль: минимум 8 символов')
     if not display.strip() or len(display)>100:raise ValueError('Укажите имя (до 100 символов)')
@@ -63,7 +66,9 @@ def reset_password(login,password):
         c.execute('BEGIN IMMEDIATE')
         row=c.execute('SELECT * FROM users WHERE login=?',(login,)).fetchone()
         if not row:raise ValueError('Пользователь с таким логином не найден')
-        user=dict(row);salt=secrets.token_hex(16)
+        user=dict(row)
+        if user.get('server_root') and len(password)<12:raise ValueError('Пароль root: минимум 12 символов')
+        salt=secrets.token_hex(16)
         hashed=hashlib.pbkdf2_hmac('sha256',password.encode(),bytes.fromhex(salt),250000).hex()
         c.execute('UPDATE users SET salt=?,password=?,revision=revision+1 WHERE id=?',(salt,hashed,user['id']))
         c.execute('DELETE FROM sessions WHERE user_id=?',(user['id'],))
@@ -72,10 +77,11 @@ def reset_password(login,password):
 def authenticate(login,password):
     with db() as c:r=c.execute('SELECT * FROM users WHERE login=?',(login,)).fetchone()
     if not r or not hmac.compare_digest(r['password'],hashlib.pbkdf2_hmac('sha256',password.encode(),bytes.fromhex(r['salt']),250000).hex()):raise PermissionError('Неверный логин или пароль')
+    if r['status']=='deleted':raise PermissionError('Учётная запись удалена')
     return dict(r)
 def session(user):
     token=secrets.token_urlsafe(32);csrf=secrets.token_urlsafe(24)
-    with db() as c:c.execute('INSERT INTO sessions VALUES (?,?,?,?)',(token,user['id'],csrf,time.time()+86400))
+    with db() as c:c.execute('INSERT INTO sessions(token,user_id,csrf,expires) VALUES (?,?,?,?)',(token,user['id'],csrf,time.time()+86400))
     return token
 
 def resource(c,rid,include_deleted=False):
@@ -136,3 +142,22 @@ def script_info(code,kind,validate=True):
         missing=', '.join(sorted(required-funcs))
         raise ValueError('Для выбранного назначения не хватает функций: '+missing+'. Выберите подходящее назначение или используйте шаблон под редактором.')
     return (lines[0][:200] if lines else ''),'\n'.join(lines[1:]).strip()
+
+
+def is_root(user):
+    return bool(user and user.get('server_root') and user.get('admin') and user.get('login')=='root' and user.get('status')=='active')
+
+def create_root(display,password):
+    """Local operator only: a fresh password revokes any pre-existing root sessions."""
+    if len(password)<12:raise ValueError('Пароль root: минимум 12 символов')
+    display=display.strip() or 'Root'
+    if len(display)>100:raise ValueError('Имя: до 100 символов')
+    salt=secrets.token_hex(16);hashed=hashlib.pbkdf2_hmac('sha256',password.encode(),bytes.fromhex(salt),250000).hex()
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE');row=c.execute("SELECT * FROM users WHERE login='root'").fetchone()
+        if row:
+            root_id=row['id'];c.execute("UPDATE users SET display=?,salt=?,password=?,status='active',admin=1,server_root=1,revision=revision+1 WHERE id=?",(display,salt,hashed,root_id));c.execute('DELETE FROM sessions WHERE user_id=?',(root_id,))
+        else:
+            root_id=uid();c.execute("INSERT INTO users(id,login,display,salt,password,status,admin,created,server_root) VALUES (?,'root',?,?,?,'active',1,?,1)",(root_id,display,salt,hashed,time.time()))
+        user=dict(c.execute('SELECT * FROM users WHERE id=?',(root_id,)).fetchone());audit(c,user,None,'Настройка root через консоль сервера',{'source':'local_console','sessions_revoked':True})
+        return user

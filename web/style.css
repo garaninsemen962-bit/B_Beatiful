@@ -14,3 +14,15 @@
 
 form[data-pivot-layout]+form{margin-top:12px}
 .ai-prose{white-space:pre-line;line-height:1.75;max-width:100ch;overflow-wrap:anywhere}.ai-response h3{margin-top:28px}.ai-response h4{margin-bottom:6px}.ai-response .finding{margin:24px 0;padding:4px 0 8px 20px}.ai-references{font-size:13px;line-height:1.8;color:#64748b}.ai-references a{display:inline-block;margin-right:8px}.ai-plan{padding-left:26px}.ai-plan>li{padding:12px;margin:12px 0;border:1px solid #dbe4ef;border-radius:8px}.ai-wait{display:flex;gap:18px;align-items:flex-start;padding:18px;background:#f0f8fa;border-radius:8px}.ai-spinner{display:inline-block;flex-shrink:0;width:24px;height:24px;border:3px solid #cde5e8;border-top-color:#087f8c;border-radius:50%;animation:ai-spin 1s linear infinite}form[data-ai-start] select{max-width:600px;width:100%}a[data-ai-history][aria-current=true]{font-weight:700;text-decoration:underline}@keyframes ai-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.ai-spinner{animation:none}}
+.prompt-settings,.prompt-snapshot{margin:20px 0;border:1px solid #dbe4ef;border-radius:8px;padding:14px}.prompt-settings>summary,.prompt-snapshot>summary{cursor:pointer;color:#45657b}.prompt-settings-body{margin-top:16px}.system-prompt{font:14px/1.6 ui-monospace,monospace;min-height:250px;tab-size:4}.system-prompt[readonly]{background:#f4f7fa;color:#52657a}.prompt-snapshot pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:500px;overflow:auto}.prompt-settings .row{margin-top:12px}
+.root-output{min-height:160px;max-height:600px;overflow:auto;background:#102735;color:#e0f1f7;padding:18px;white-space:pre-wrap;overflow-wrap:anywhere}[data-root-console] .card>form{margin:16px 0}[data-root-schema] pre{max-width:600px;white-space:pre-wrap;max-height:120px;overflow:auto}
+/* Server data keeps readable columns and scrolls inside its own card. */
+[data-root-console] table{min-width:780px}
+[data-root-console] th{white-space:nowrap}
+[data-root-console] td{min-width:90px;overflow-wrap:break-word}
+[data-root-console] td:first-child{min-width:180px}
+[data-root-console] [data-root-result] table{width:max-content;min-width:100%;max-width:none}
+[data-root-console] [data-root-result] td{max-width:360px;white-space:pre-wrap;word-break:break-word}
+[data-root-console] .tablewrap{max-width:100%}
+
+.input-quality td:nth-child(-n+2),.input-quality th:nth-child(-n+2){white-space:nowrap;min-width:95px}
